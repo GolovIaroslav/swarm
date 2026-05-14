@@ -1,10 +1,17 @@
 # swarm config — copy to config.toml and edit.
 
 [backend]
-# lm_studio | llama_cpp | custom
+# lm_studio | llama_cpp | custom | api
+#   lm_studio — run LM Studio's server, swarm just pings it
+#   llama_cpp — swarm spawns llama-server as a subprocess
+#   custom    — any other OpenAI-compatible URL you run yourself
+#   api       — remote provider via LiteLLM (OpenRouter, NVIDIA NIM, Groq,
+#               OpenAI, Anthropic, Gemini, Together, DeepInfra, …)
 type = "lm_studio"
-# OpenAI-compatible base URL. For lm_studio this is its server; for custom point
-# it wherever you want. For llama_cpp this is overridden by [backend.llama_cpp].
+
+# OpenAI-compatible base URL. For lm_studio this is its server.
+# For llama_cpp it's overridden by [backend.llama_cpp] below.
+# Not used for api backends.
 url  = "http://localhost:1234/v1"
 
 [backend.llama_cpp]
@@ -15,6 +22,46 @@ model  = "/home/jar/models/qwen2.5-coder-14b-q4_k_m.gguf"
 ctx    = 32768
 ngl    = 35          # GPU layers offloaded; 0 = CPU only
 port   = 8090
+
+[backend.api]
+# Only used when backend.type = "api".
+# The model string must carry the LiteLLM provider prefix.
+# A few examples (uncomment one and set the matching env var):
+#
+#   model = "openrouter/anthropic/claude-3.5-sonnet"
+#   api_key_env = "OPENROUTER_API_KEY"
+#
+#   model = "openrouter/qwen/qwen-2.5-coder-32b-instruct"
+#   api_key_env = "OPENROUTER_API_KEY"
+#
+#   model = "nvidia_nim/meta/llama-3.1-405b-instruct"
+#   api_key_env = "NVIDIA_API_KEY"
+#
+#   model = "groq/llama-3.1-70b-versatile"
+#   api_key_env = "GROQ_API_KEY"
+#
+#   model = "anthropic/claude-3-5-sonnet-20241022"
+#   api_key_env = "ANTHROPIC_API_KEY"
+#
+#   model = "openai/gpt-4o"
+#   api_key_env = "OPENAI_API_KEY"
+#
+#   model = "gemini/gemini-2.0-flash-exp"
+#   api_key_env = "GEMINI_API_KEY"
+#
+# Optional base_url for self-hosted / private endpoints.
+# base_url = ""
+model = ""
+api_key_env = ""
+
+[backend.per_role]
+# Per-role model override. Strong model for the architect, cheap/fast for
+# the coder, anything for the rest. Roles you omit fall back to the
+# active backend default.
+#
+# architect = "openrouter/anthropic/claude-3.5-sonnet"
+# coder     = "openrouter/qwen/qwen-2.5-coder-32b-instruct"
+# tester    = "groq/llama-3.1-70b-versatile"
 
 [execution]
 process              = "hierarchical"  # hierarchical | sequential

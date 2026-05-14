@@ -171,8 +171,12 @@ _MANAGER_BACKSTORY = (
 )
 
 
-def build(name: str, llm, tools_by_name: dict, cfg: Config) -> Agent:
-    """Construct one crewai.Agent for the given role name."""
+def build(name: str, llm, tools_by_name: dict, cfg: Config, verbose: bool = True) -> Agent:
+    """Construct one crewai.Agent for the given role name.
+
+    `llm` is the resolved LLM instance for this role (may differ per role if
+    `[backend.per_role]` is set in config).
+    """
     if name not in ROLE_PROMPTS:
         raise ValueError(f"Unknown role: {name!r}. Valid: {ROLES}")
 
@@ -186,7 +190,7 @@ def build(name: str, llm, tools_by_name: dict, cfg: Config) -> Agent:
         backstory=p["backstory"],
         tools=agent_tools,
         llm=llm,
-        verbose=True,
+        verbose=verbose,
         allow_delegation=False,
         respect_context_window=True,
         max_iter=cfg.execution.max_iter,
@@ -196,7 +200,7 @@ def build(name: str, llm, tools_by_name: dict, cfg: Config) -> Agent:
     )
 
 
-def manager(llm, cfg: Config) -> Agent:
+def manager(llm, cfg: Config, verbose: bool = True) -> Agent:
     """Construct the hierarchical manager agent (allow_delegation=True)."""
     return Agent(
         role=_MANAGER_ROLE,
@@ -204,7 +208,7 @@ def manager(llm, cfg: Config) -> Agent:
         backstory=_MANAGER_BACKSTORY,
         tools=[],
         llm=llm,
-        verbose=True,
+        verbose=verbose,
         allow_delegation=True,
         respect_context_window=True,
         max_iter=cfg.execution.max_iter,

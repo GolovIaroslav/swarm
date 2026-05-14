@@ -16,13 +16,16 @@ Ctrl+C anywhere is safe — SIGINT handler flushes the store and exits.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
+import shutil
 import signal
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -34,9 +37,17 @@ os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 os.environ.setdefault("LITELLM_TELEMETRY", "False")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
 
+# Pydantic warning about method callbacks on Task — we use our own SQLite
+# checkpoint, so CrewAI's serialized checkpointing is irrelevant.
+warnings.filterwarnings(
+    "ignore",
+    message=".*method callbacks cannot be serialized.*",
+)
+
 import questionary
 from crewai import Crew, Process
 from rich import print as rprint
+from rich.table import Table
 from rich.tree import Tree
 
 import agents as ag
@@ -198,7 +209,7 @@ def setup_screen(cfg: Config) -> Choices:
 # Pre-flight checks
 # ---------------------------------------------------------------------------
 
-def preflight(backend: Backend, cfg: Config, choices: Choices) -> bool:
+def preflight(backend: Backend, cfg: Config, choices: Choices, skip_confirm: bool = False) -> bool:
     """Ping LLM, JSON test, web-search test. Returns True if user confirms run."""
     print("\n[preflight] Checking environment...\n")
 
@@ -211,37 +222,39 @@ def preflight(backend: Backend, cfg: Config, choices: Choices) -> bool:
         return False
 
     # 2. JSON capability test (needed for hierarchical mode)
-    json_ok = False
-    try:
-        import openai as _openai
-        client = _openai.OpenAI(
-            base_url=cfg.backend.url,
-            api_key="lm-studio",
-        )
-        resp = client.chat.completions.create(
-            model=backend.model_id,
-            messages=[{
-                "role": "user",
-                "content": 'Respond with exactly this JSON and nothing else: {"status":"ok"}',
-            }],
-            max_tokens=30,
-        )
-        raw_text = (resp.choices[0].message.content or "").strip()
-        # strip markdown fences if model wraps JSON
-        raw_text = raw_text.strip("`")
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:].strip()
-        json.loads(raw_text)
-        json_ok = True
-        print("  ✓  JSON output: OK")
-    except json.JSONDecodeError:
-        print(f"  ⚠  JSON output: model returned non-JSON ({raw_text!r})")
-        if choices.process == "hierarchical":
-            print("     Hierarchical mode needs reliable JSON — consider switching to sequential.")
-            if questionary.confirm("Switch to sequential?", default=True).ask():
-                choices.process = "sequential"
-    except Exception as e:
-        print(f"  ⚠  JSON test skipped: {e}")
+    # For api/remote backends we trust the provider and skip the test.
+    raw_text = ""
+    if cfg.backend.type in ("lm_studio", "llama_cpp", "custom"):
+        try:
+            import openai as _openai
+            client = _openai.OpenAI(
+                base_url=cfg.backend.url,
+                api_key="lm-studio",
+            )
+            resp = client.chat.completions.create(
+                model=backend.model_id,
+                messages=[{
+                    "role": "user",
+                    "content": 'Respond with exactly this JSON and nothing else: {"status":"ok"}',
+                }],
+                max_tokens=30,
+            )
+            raw_text = (resp.choices[0].message.content or "").strip()
+            raw_text = raw_text.strip("`")
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:].strip()
+            json.loads(raw_text)
+            print("  ✓  JSON output: OK")
+        except json.JSONDecodeError:
+            print(f"  ⚠  JSON output: model returned non-JSON ({raw_text!r})")
+            if choices.process == "hierarchical" and not skip_confirm:
+                print("     Hierarchical mode needs reliable JSON — consider switching to sequential.")
+                if questionary.confirm("Switch to sequential?", default=True).ask():
+                    choices.process = "sequential"
+        except Exception as e:
+            print(f"  ⚠  JSON test skipped: {e}")
+    else:
+        print("  ·  JSON output: skipped (remote api backend)")
 
     # 3. Web search test (only when researcher is in the pipeline)
     agent_names = _agent_names_for(choices)
@@ -264,6 +277,8 @@ def preflight(backend: Backend, cfg: Config, choices: Choices) -> bool:
     print(f"  Process: {choices.process}")
     print()
 
+    if skip_confirm:
+        return True
     confirmed = questionary.confirm(
         "Start the crew? (May run for hours. Ctrl+C saves state.)",
         default=True,
@@ -330,13 +345,30 @@ class _SwarmFilter(logging.Filter):
         return not any(record.name.startswith(n) for n in self._blocked)
 
 
+_HANDOFF_TOKEN_BUDGET = 500
+
+
 def _extract_handoff(raw: str) -> str:
-    """Pull the ## HANDOFF section from raw agent output (up to 2000 chars)."""
+    """Pull the ## HANDOFF section from raw agent output, capped to ~500 tokens.
+
+    Falls back to the trailing 2000 chars if no HANDOFF marker is found.
+    Uses tiktoken when available, otherwise rough char-count heuristic.
+    """
     upper = raw.upper()
     idx = upper.find("## HANDOFF")
-    if idx >= 0:
-        return raw[idx : idx + 2000]
-    return raw[-500:] if len(raw) > 500 else raw
+    text = raw[idx:] if idx >= 0 else (raw[-2000:] if len(raw) > 2000 else raw)
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        tokens = enc.encode(text)
+        if len(tokens) <= _HANDOFF_TOKEN_BUDGET:
+            return text
+        return enc.decode(tokens[:_HANDOFF_TOKEN_BUDGET])
+    except Exception:
+        # ~4 chars per token rule of thumb
+        max_chars = _HANDOFF_TOKEN_BUDGET * 4
+        return text[:max_chars]
 
 
 def _get_raw(output) -> str:
@@ -383,47 +415,245 @@ def _register_litellm_callback(store: "Store") -> None:  # type: ignore[name-def
 
 
 # ---------------------------------------------------------------------------
-# Help text
+# CLI parser
 # ---------------------------------------------------------------------------
 
-def _print_help() -> None:
-    print("""swarm — local multi-agent coding TUI
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="swarm",
+        description=(
+            "Local-first multi-agent TUI for autonomous coding. "
+            "Talks to LM Studio / llama.cpp / any OpenAI-compat or LiteLLM provider."
+        ),
+    )
+    sub = p.add_subparsers(dest="cmd")
 
-Usage:
-  python swarm.py           launch interactive setup screen
-  python swarm.py --debug   same but write full debug log to _logs/debug.log
-  python swarm.py --help    show this message
+    run_p = sub.add_parser("run", help="Run a crew (default if no subcommand).")
+    _add_run_flags(run_p)
 
-Logs (written per project under projects/<name>/_logs/):
-  events.log   clean INFO-level log — shown in the monitor panel
-  debug.log    everything including LiteLLM internals (only with --debug)
+    sub.add_parser("list", help="List existing projects under projects/.")
 
-Config:
-  config.toml  copy from config.toml.example and edit
-""")
+    rm_p = sub.add_parser("rm", help="Delete a project directory.")
+    rm_p.add_argument("name", help="Project name")
+    rm_p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
+    sub.add_parser("presets", help="List available pipeline presets.")
+
+    return p
+
+
+def _add_run_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--project", help="Project name (skips the TUI prompt)")
+    p.add_argument(
+        "--preset",
+        choices=list(pr.PIPELINES.keys()) + ["custom"],
+        help="Pipeline preset (skips the TUI prompt)",
+    )
+    p.add_argument("--goal", help="What the crew should build (skips the TUI prompt)")
+    p.add_argument(
+        "--roles",
+        help="Comma-separated agent roles (only used when --preset=custom)",
+    )
+    p.add_argument(
+        "--process",
+        choices=["sequential", "hierarchical"],
+        help="Crew process mode (skips the TUI prompt)",
+    )
+    p.add_argument("--resume", action="store_true", help="Resume an existing project")
+    p.add_argument("--no-resume", action="store_true", help="Start over even if a checkpoint exists")
+    p.add_argument("--no-monitor", action="store_true", help="Disable the rich live panel")
+    p.add_argument("--debug", action="store_true", help="Also write full LiteLLM trace to _logs/debug.log")
+    p.add_argument("-y", "--yes", action="store_true", help="Skip 'Start?' confirmation")
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Subcommands: list / rm / presets
+# ---------------------------------------------------------------------------
+
+def _cmd_list(cfg: Config) -> int:
+    root = projects_root(cfg)
+    if not root.exists():
+        print(f"No projects directory at {root}.")
+        return 0
+
+    table = Table(title="Projects", show_header=True, header_style="bold")
+    table.add_column("Name", style="cyan")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Done", justify="right")
+    table.add_column("Files", justify="right")
+    table.add_column("Modified")
+
+    rows = sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    for proj in rows:
+        if not proj.is_dir():
+            continue
+        db = proj / "_state.db"
+        n_total = n_done = 0
+        files = "—"
+        if db.exists():
+            try:
+                s = Store(db)
+                s.open()
+                tasks = s.all_tasks()
+                n_total = len(tasks)
+                n_done = sum(1 for t in tasks if t.status == "done")
+                src = proj / "src"
+                if src.exists():
+                    files = str(sum(1 for _ in src.rglob("*") if _.is_file()))
+                s.close()
+            except Exception:
+                pass
+        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(proj.stat().st_mtime))
+        table.add_row(proj.name, str(n_total), str(n_done), files, mtime)
+
+    rprint(table)
+    return 0
+
+
+def _cmd_rm(cfg: Config, name: str, assume_yes: bool) -> int:
+    target = projects_root(cfg) / name
+    if not target.exists():
+        print(f"No such project: {target}")
+        return 1
+    if not assume_yes:
+        ok = questionary.confirm(f"Delete {target}? This cannot be undone.").ask()
+        if not ok:
+            print("aborted.")
+            return 1
+    shutil.rmtree(target, ignore_errors=True)
+    print(f"Deleted {target}.")
+    return 0
+
+
+def _cmd_presets() -> int:
+    print("Available presets:")
+    for name, fn in pr.PIPELINES.items():
+        specs = fn("<goal>")
+        roles = ", ".join(s.agent_name for s in specs)
+        print(f"  {name:22s}  {roles}")
+    print(f"  {'custom':22s}  (pick agents by hand)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Main / dispatch
 # ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
-    argv = list(argv or [])
-    debug = "--debug" in argv
-    if "--help" in argv or "-h" in argv:
-        _print_help()
-        return 0
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    cmd = args.cmd or "run"
 
     cfg = load()
 
-    choices = setup_screen(cfg)
+    if cmd == "list":
+        return _cmd_list(cfg)
+    if cmd == "rm":
+        return _cmd_rm(cfg, args.name, args.yes)
+    if cmd == "presets":
+        return _cmd_presets()
+
+    return _cmd_run(cfg, args)
+
+
+def _resolve_choices(cfg: Config, args: argparse.Namespace) -> Choices:
+    """Build Choices from CLI args, falling back to the interactive TUI
+    for any field the user didn't pre-fill."""
+    proj_root = projects_root(cfg)
+    proj_root.mkdir(parents=True, exist_ok=True)
+
+    project = (args.project or questionary.text("Project name:").ask() or "").strip()
+    if not project:
+        sys.exit(0)
+
+    # resume detection (also handles --resume / --no-resume)
+    db_path = proj_root / project / "_state.db"
+    resume = False
+    if db_path.exists():
+        s = Store(db_path)
+        s.open()
+        unfinished = s.unfinished_tasks()
+        s.close()
+        if unfinished:
+            if args.resume:
+                resume = True
+            elif args.no_resume:
+                shutil.rmtree(proj_root / project, ignore_errors=True)
+                resume = False
+            else:
+                action = questionary.select(
+                    f"Found {len(unfinished)} unfinished task(s) in '{project}'. What to do?",
+                    choices=["Resume", "Start over", "Delete project"],
+                ).ask()
+                if action == "Resume":
+                    resume = True
+                elif action == "Delete project":
+                    shutil.rmtree(proj_root / project, ignore_errors=True)
+
+    preset = args.preset or questionary.select(
+        "Project preset:",
+        choices=list(pr.PIPELINES.keys()) + ["custom"],
+    ).ask()
+    if not preset:
+        sys.exit(0)
+
+    goal = args.goal
+    if not goal:
+        try:
+            goal = questionary.text(
+                "Describe the goal (Alt+Enter to finish multiline, Enter for single line):",
+                multiline=True,
+            ).ask()
+        except Exception:
+            goal = questionary.text("Describe the goal:").ask()
+    if not goal:
+        sys.exit(0)
+    goal = goal.strip()
+
+    roles: list[str] = []
+    if preset == "custom":
+        if args.roles:
+            roles = [r.strip() for r in args.roles.split(",") if r.strip()]
+            unknown = [r for r in roles if r not in ag.ROLES]
+            if unknown:
+                print(f"Unknown role(s): {unknown}. Valid: {ag.ROLES}", file=sys.stderr)
+                return 2  # type: ignore[return-value]
+        else:
+            roles = questionary.checkbox(
+                "Select agents:",
+                choices=list(ag.ROLES),
+            ).ask() or []
+        if not roles:
+            print("[swarm] No agents selected. Exiting.")
+            sys.exit(0)
+
+    process_choice = args.process or questionary.select(
+        "Process mode:",
+        choices=["sequential", "hierarchical"],
+        default="sequential",
+    ).ask() or "sequential"
+
+    return Choices(
+        project=project,
+        preset=preset,
+        goal=goal,
+        roles=roles,
+        process=process_choice,
+        resume=resume,
+    )
+
+
+def _cmd_run(cfg: Config, args: argparse.Namespace) -> int:
+    # If no CLI args at all, run the full interactive TUI for back-compat.
+    fully_interactive = not any([args.project, args.preset, args.goal])
+    choices = setup_screen(cfg) if fully_interactive else _resolve_choices(cfg, args)
 
     print("\n[swarm] Starting backend...")
     backend = Backend(cfg=cfg)
     backend.start()
     print(f"[swarm] Backend ready — model: {backend.model_id}\n")
 
-    if not preflight(backend, cfg, choices):
+    if not preflight(backend, cfg, choices, skip_confirm=args.yes):
         backend.stop()
         return 0
 
@@ -436,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
     for d in (crew_dir, log_path.parent):
         d.mkdir(parents=True, exist_ok=True)
 
-    _setup_file_logging(log_path.parent / "run.log", debug=debug)
+    _setup_file_logging(log_path.parent / "run.log", debug=args.debug)
     logging.info(f"[swarm] starting project={choices.project} preset={choices.preset}")
 
     store = Store(db_path)
@@ -445,8 +675,14 @@ def main(argv: list[str] | None = None) -> int:
     _register_litellm_callback(store)
     install_signal_handlers(lambda: (store.close(), backend.stop()))
 
-    # ---- build tools + LLM ----
-    lm = backend.llm()
+    # ---- monitor on/off + verbose ----
+    live_monitor = cfg.ui.live_monitor and not args.no_monitor
+    # When the live panel is on we want a clean screen — silence CrewAI's
+    # verbose console output (everything still goes to events.log / debug.log).
+    crew_verbose = not live_monitor
+
+    # ---- build tools + LLM(s) ----
+    lm_default = backend.llm()
     tools_dict = make_tools(proj_root, store, cfg)
 
     # ---- task specs ----
@@ -475,7 +711,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     needed_roles = {s.agent_name for s in pending_specs}
-    agents_built = {name: ag.build(name, lm, tools_dict, cfg) for name in needed_roles}
+    # resolve per-role LLM override from cfg.backend.per_role
+    role_llms: dict[str, object] = {}
+    for role in needed_roles:
+        override = cfg.backend.per_role.get(role)
+        if override:
+            try:
+                role_llms[role] = backend.llm(model_override=override)
+                logging.info(f"[swarm] role={role} uses override model={override!r}")
+            except Exception as e:
+                logging.warning(f"[swarm] role={role} override failed ({e}), using default")
+                role_llms[role] = lm_default
+        else:
+            role_llms[role] = lm_default
+
+    agents_built = {
+        name: ag.build(name, role_llms[name], tools_dict, cfg, verbose=crew_verbose)
+        for name in needed_roles
+    }
 
     # ---- build crewai Task objects with per-task callbacks ----
     crewai_tasks: list = []
@@ -536,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- start monitor ----
     stop_event = threading.Event()
-    if cfg.ui.live_monitor:
+    if live_monitor:
         monitor = Monitor(store, log_path, choices.project, backend.model_id, cfg)
         mon_thread = monitor.run(stop_event)
     else:
@@ -575,10 +828,10 @@ def main(argv: list[str] | None = None) -> int:
         agents=list(agents_built.values()),
         tasks=crewai_tasks,
         process=process,
-        verbose=True,
+        verbose=crew_verbose,
     )
     if choices.process == "hierarchical":
-        crew_kwargs["manager_agent"] = ag.manager(lm, cfg)
+        crew_kwargs["manager_agent"] = ag.manager(lm_default, cfg, verbose=crew_verbose)
 
     crew = Crew(**crew_kwargs)
 

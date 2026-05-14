@@ -30,10 +30,31 @@ class LlamaCppCfg:
 
 
 @dataclass
+class ApiCfg:
+    """Generic remote LLM via LiteLLM (any provider with the right prefix).
+
+    Examples for `model`:
+        openrouter/anthropic/claude-3.5-sonnet
+        openrouter/qwen/qwen-2.5-coder-32b-instruct
+        nvidia_nim/meta/llama-3.1-405b-instruct
+        groq/llama-3.1-70b-versatile
+        anthropic/claude-3-5-sonnet-20241022
+        openai/gpt-4o
+        gemini/gemini-2.0-flash-exp
+    """
+    model: str = ""
+    api_key_env: str = ""              # name of env var that holds the key
+    base_url: str = ""                  # optional, for self-hosted endpoints
+
+
+@dataclass
 class BackendCfg:
-    type: str = "lm_studio"          # lm_studio | llama_cpp | custom
+    type: str = "lm_studio"          # lm_studio | llama_cpp | custom | api
     url: str = "http://localhost:1234/v1"
     llama_cpp: LlamaCppCfg = field(default_factory=LlamaCppCfg)
+    api: ApiCfg = field(default_factory=ApiCfg)
+    # per-role model override; key = role name, value = litellm model string
+    per_role: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -96,9 +117,14 @@ def load(path: Path | str = DEFAULT_PATH) -> Config:
 
     if "backend" in raw:
         braw = raw["backend"]
-        _apply(cfg.backend, {k: v for k, v in braw.items() if k != "llama_cpp"})
+        nested_keys = {"llama_cpp", "api", "per_role"}
+        _apply(cfg.backend, {k: v for k, v in braw.items() if k not in nested_keys})
         if "llama_cpp" in braw:
             _apply(cfg.backend.llama_cpp, braw["llama_cpp"])
+        if "api" in braw:
+            _apply(cfg.backend.api, braw["api"])
+        if "per_role" in braw:
+            cfg.backend.per_role = dict(braw["per_role"])
 
     if "execution" in raw:
         _apply(cfg.execution, raw["execution"])

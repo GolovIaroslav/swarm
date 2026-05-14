@@ -12,8 +12,9 @@ It's also not a chat wrapper. It's a small TUI that walks you through setup, the
 
 ## What it does
 
-- One command, `python swarm.py`. A questionary TUI walks you through project name, preset, goal and process mode.
-- Two local backends. LM Studio (you run its server) or llama.cpp (we spawn `llama-server` for you and kill it on exit). A `custom` backend type covers any OpenAI-compatible URL.
+- One command, `python swarm.py`. A questionary TUI walks you through project name, preset, goal and process mode. Or pass everything as CLI flags and skip the TUI.
+- Four backend types: LM Studio, llama.cpp (we spawn `llama-server` for you), any OpenAI-compatible `custom` URL, and an `api` mode that lets you point at any provider LiteLLM supports — OpenRouter, NVIDIA NIM, Groq, OpenAI, Anthropic, Gemini, Together, DeepInfra, and so on. One env var with the key, one model string, done.
+- Per-role model override. Strong model for the architect, fast/cheap for the coder, etc.
 - Nine roles in the agent pool: researcher, architect, coder, tester, reviewer, devops, security, docs, refactorer. Six presets shipped, or compose your own.
 - Hierarchical or sequential crews. The pre-flight tests whether the model can produce clean JSON and warns down to sequential if it can't.
 - Resume after crashes. Checkpoint is written to SQLite after every task, not every kickoff. You can pick up where you left off.
@@ -75,13 +76,21 @@ All knobs in `config.toml`. The interesting ones:
 
 See `config.toml.example` for the full template with comments.
 
-## CLI flags
+## CLI
 
 ```
-python swarm.py             interactive setup
-python swarm.py --debug     also write full LiteLLM trace to _logs/debug.log
-python swarm.py --help      show usage
+python swarm.py                          interactive setup (default)
+python swarm.py run --project foo \      non-interactive: skip the TUI entirely
+        --preset cli_tool \
+        --goal "build a JSON-to-CSV CLI" \
+        --process sequential -y
+python swarm.py list                     show existing projects + checkpoint status
+python swarm.py rm <name>                delete a project directory
+python swarm.py presets                  show available pipelines
+python swarm.py --help                   full usage
 ```
+
+Flags for `run`: `--project`, `--preset`, `--goal`, `--roles a,b,c` (for `--preset custom`), `--process sequential|hierarchical`, `--resume`, `--no-resume`, `--no-monitor`, `--debug`, `-y/--yes`.
 
 ## Hardware
 

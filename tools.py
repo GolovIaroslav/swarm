@@ -234,7 +234,11 @@ def _do_search(query: str, cfg: Config) -> str:
 
 
 def _ddg_search(query: str) -> str:
-    from duckduckgo_search import DDGS
+    # the package was renamed: `ddgs` (new) -> falls back to `duckduckgo_search` (old)
+    try:
+        from ddgs import DDGS  # type: ignore[import-not-found]
+    except ImportError:
+        from duckduckgo_search import DDGS  # type: ignore[import-not-found]
     with DDGS() as ddgs:
         hits = list(ddgs.text(query, max_results=5))
     lines = []
