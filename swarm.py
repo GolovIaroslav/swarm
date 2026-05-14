@@ -79,7 +79,9 @@ def install_signal_handlers(on_exit) -> None:
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
+    # SIGTERM is not available on Windows
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handler)
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +281,45 @@ def _specs_for(choices: Choices):
     return pr.PIPELINES[choices.preset](choices.goal)
 
 
-def _setup_file_logging(log_path: Path) -> None:
+def _setup_file_logging(log_path: Path, debug: bool = False) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+
+    # events.log — clean INFO+ log shown in the monitor panel
+    events_path = log_path.parent / "events.log"
+    events_h = logging.FileHandler(str(events_path), mode="a", encoding="utf-8")
+    events_h.setLevel(logging.INFO)
+    events_h.setFormatter(fmt)
+    # suppress noisy third-party loggers in the clean log
+    events_h.addFilter(_SwarmFilter())
+
+    handlers: list[logging.Handler] = [events_h]
+
+    if debug:
+        # debug.log — everything including litellm internals
+        debug_path = log_path.parent / "debug.log"
+        debug_h = logging.FileHandler(str(debug_path), mode="a", encoding="utf-8")
+        debug_h.setLevel(logging.DEBUG)
+        debug_h.setFormatter(fmt)
+        handlers.append(debug_h)
+        print(f"  [debug] full log: {debug_path}")
+
     root = logging.getLogger()
-    root.addHandler(handler)
+    for h in handlers:
+        root.addHandler(h)
     root.setLevel(logging.DEBUG)
+
+    # keep litellm noise out of events.log (it goes to debug.log if --debug)
+    for noisy in ("LiteLLM", "litellm", "httpx", "httpcore", "openai"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+class _SwarmFilter(logging.Filter):
+    """Allow only our own log records into the clean events.log."""
+    _blocked = ("LiteLLM", "litellm", "httpx", "httpcore", "openai", "crewai")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not any(record.name.startswith(n) for n in self._blocked)
 
 
 def _extract_handoff(raw: str) -> str:
@@ -316,10 +350,62 @@ def _print_file_tree(proj_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# LiteLLM token tracking
+# ---------------------------------------------------------------------------
+
+def _register_litellm_callback(store: "Store") -> None:  # type: ignore[name-defined]
+    """Hook into litellm to count tokens_in / tokens_out / llm_requests."""
+    try:
+        import litellm
+
+        def _success(kwargs, response, start_time, end_time):
+            try:
+                usage = getattr(response, "usage", None)
+                if usage:
+                    store.bump_metric("tokens_in",  getattr(usage, "prompt_tokens",     0) or 0)
+                    store.bump_metric("tokens_out", getattr(usage, "completion_tokens",  0) or 0)
+                store.bump_metric("llm_requests")
+            except Exception:
+                pass
+
+        litellm.success_callback = litellm.success_callback or []
+        litellm.success_callback.append(_success)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Help text
+# ---------------------------------------------------------------------------
+
+def _print_help() -> None:
+    print("""swarm — local multi-agent coding TUI
+
+Usage:
+  python swarm.py           launch interactive setup screen
+  python swarm.py --debug   same but write full debug log to _logs/debug.log
+  python swarm.py --help    show this message
+
+Logs (written per project under projects/<name>/_logs/):
+  events.log   clean INFO-level log — shown in the monitor panel
+  debug.log    everything including LiteLLM internals (only with --debug)
+
+Config:
+  config.toml  copy from config.toml.example and edit
+""")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
+def main(argv: list[str] | None = None) -> int:
+    argv = list(argv or [])
+    debug = "--debug" in argv
+    if "--help" in argv or "-h" in argv:
+        _print_help()
+        return 0
+
     cfg = load()
 
     choices = setup_screen(cfg)
@@ -336,18 +422,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     # ---- project directories ----
     proj_root = projects_root(cfg) / choices.project
     crew_dir = proj_root / "_crew"
-    log_path = proj_root / "_logs" / "run.log"
+    log_path = proj_root / "_logs" / "events.log"   # shown in monitor
     db_path = proj_root / "_state.db"
 
     for d in (crew_dir, log_path.parent):
         d.mkdir(parents=True, exist_ok=True)
 
-    _setup_file_logging(log_path)
+    _setup_file_logging(log_path.parent / "run.log", debug=debug)
     logging.info(f"[swarm] starting project={choices.project} preset={choices.preset}")
 
     store = Store(db_path)
     store.open()
 
+    _register_litellm_callback(store)
     install_signal_handlers(lambda: (store.close(), backend.stop()))
 
     # ---- build tools + LLM ----

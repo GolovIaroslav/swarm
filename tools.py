@@ -19,7 +19,10 @@ from __future__ import annotations
 import subprocess
 import textwrap
 from pathlib import Path
-from typing import Optional, Type
+from typing import TYPE_CHECKING, Optional, Type
+
+if TYPE_CHECKING:
+    from state import Store as _StoreType
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -93,8 +96,9 @@ def tool_read_file(project_root: Path) -> BaseTool:
     return ReadFileTool()
 
 
-def tool_write_file(project_root: Path) -> BaseTool:
+def tool_write_file(project_root: Path, store: Optional["Store"] = None) -> BaseTool:
     root = project_root
+    _store = store
 
     class WriteFileTool(BaseTool):
         name: str = "write_file"
@@ -106,6 +110,11 @@ def tool_write_file(project_root: Path) -> BaseTool:
                 target = _safe_path(root, path)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
+                if _store is not None:
+                    try:
+                        _store.bump_metric("files_made")
+                    except Exception:
+                        pass
                 return f"Written {len(content)} bytes to {path}"
             except Exception as e:
                 return f"ERROR: {e}"
@@ -270,7 +279,7 @@ def make_tools(project_root: Path, store: Store, cfg: Config) -> dict[str, BaseT
     """Build all tools keyed by name. Agents pick subsets via ROLE_TOOLS."""
     return {
         "read_file":   tool_read_file(project_root),
-        "write_file":  tool_write_file(project_root),
+        "write_file":  tool_write_file(project_root, store),
         "run_command": tool_run_command(project_root),
         "get_state":   tool_get_state(store),
         "set_state":   tool_set_state(store),

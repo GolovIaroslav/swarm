@@ -117,10 +117,14 @@ class Monitor:
             tokens_in = self.store.get_metric("tokens_in")
             ctx_pct = tokens_in / self.cfg.execution.context_window * 100
 
-        rpm = self.store.get_metric("rpm")
+        # rpm = completed LLM calls / elapsed minutes
+        elapsed_min = max((time.time() - self._start_time) / 60, 0.01)
+        requests = self.store.get_metric("llm_requests")
+        rpm = requests / elapsed_min
+
         text = (
             f" {self.project_name}  │  {self.model_id}  │  {uptime}"
-            f"  │  ctx {ctx_pct:.0f}%  │  rpm {rpm:.0f}"
+            f"  │  ctx {ctx_pct:.0f}%  │  rpm {rpm:.1f}"
         )
         return Panel(Text(text, style="bold"), style="cyan")
 
@@ -184,16 +188,16 @@ class Monitor:
                 lines = self.log_path.read_text(
                     encoding="utf-8", errors="replace"
                 ).splitlines()
-                text = "\n".join(lines[-20:])
+                text = "\n".join(lines[-10:])
             except OSError:
                 text = "(log unavailable)"
-        return Panel(text or "(no log yet)", title="LOG (last 20 lines)", border_style="dim")
+        return Panel(text or "(no log yet)", title="LOG (last 10 lines)", border_style="dim")
 
     def _render_footer(self) -> Panel:
-        return Panel(
-            "[bold][q][/bold]uit (saves)  [bold][p][/bold]ause  [bold][r][/bold]etry",
-            style="dim",
-        )
+        from rich.markup import escape
+        log_hint = f" │  log: {self.log_path}" if self.log_path else ""
+        content = escape("[q]uit (Ctrl+C)  [h]elp: see README  [d]ebug: " + str(self.log_path))
+        return Panel(content, style="dim")
 
 
 def plain_stdout_monitor(
