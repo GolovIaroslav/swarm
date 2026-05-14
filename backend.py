@@ -122,19 +122,21 @@ class Backend:
                 kwargs["base_url"] = api.base_url
             return LLM(**kwargs)
 
-        # local backends (lm_studio / llama_cpp / custom)
+        # local backends (lm_studio / llama_cpp / custom).
+        # MANDATORY: always wrap with "openai/" prefix so LiteLLM uses the
+        # OpenAI-compat path. Without it CrewAI auto-detects providers based
+        # on the model name (e.g. "google/gemma-..." => native Gemini SDK,
+        # which then errors out because the package isn't installed).
         base_url = self.cfg.backend.url
         if btype == "llama_cpp":
             lc = self.cfg.backend.llama_cpp
             base_url = f"http://localhost:{lc.port}/v1"
 
         bare = model_override or self.model_id
-        # if the override already has a provider prefix, trust it; otherwise
-        # add the mandatory openai/ prefix for local servers
-        if "/" not in bare.split(":", 1)[0]:
-            model = f"openai/{bare}"
-        else:
-            model = bare
+        # strip an already-present "openai/" prefix to avoid double-wrapping
+        if bare.startswith("openai/"):
+            bare = bare[len("openai/"):]
+        model = f"openai/{bare}"
 
         return LLM(
             model=model,
