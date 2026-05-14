@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# project artifacts
+projects/
+output/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# huge upstream docs dump that lives next to the repo
+crewai_docs_full.txt
+
+# keep .md files out of the repo (except README.md) — they're working notes
+*.md
+!README.md
