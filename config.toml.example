@@ -1,0 +1,39 @@
+# swarm config — copy to config.toml and edit.
+
+[backend]
+# lm_studio | llama_cpp | custom
+type = "lm_studio"
+# OpenAI-compatible base URL. For lm_studio this is its server; for custom point
+# it wherever you want. For llama_cpp this is overridden by [backend.llama_cpp].
+url  = "http://localhost:1234/v1"
+
+[backend.llama_cpp]
+# Only used when backend.type = "llama_cpp". swarm.py will spawn this binary
+# and wait for /v1/models before continuing. Subprocess is killed on exit.
+binary = "/home/jar/progs/llama.cpp/llama-server"
+model  = "/home/jar/models/qwen2.5-coder-14b-q4_k_m.gguf"
+ctx    = 32768
+ngl    = 35          # GPU layers offloaded; 0 = CPU only
+port   = 8090
+
+[execution]
+process              = "hierarchical"  # hierarchical | sequential
+max_iter             = 15              # per-agent CrewAI loop cap
+max_retry            = 3               # per-task auto-retry budget
+max_rpm              = 30              # rate-limit to spare the local server
+task_timeout_minutes = 30              # watchdog tier 0 threshold
+context_window       = 60000           # informs respect_context_window behaviour
+max_response_tokens  = 4096
+
+[tools]
+web_search          = true
+search_provider     = "ddg"            # ddg | tavily
+search_max_per_task = 5
+search_cache_days   = 7
+tavily_api_key      = ""               # optional; enables fallback when DDG fails
+
+[ui]
+live_monitor = true                    # rich live panel; false = plain stdout
+
+[paths]
+projects_dir = "~/progs/crewai/projects"

@@ -1,0 +1,6 @@
+crewai>=0.80
+questionary>=2.0
+rich>=13.7
+tomli>=2.0; python_version < "3.11"
+duckduckgo-search>=6.0
+requests>=2.31
