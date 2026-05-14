@@ -674,6 +674,19 @@ def _cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     store = Store(db_path)
     store.open()
 
+    # Reset run-scoped metrics so tokens / file counts don't carry over from
+    # previous runs of the same project. Resume keeps the task table intact.
+    store.reset_metrics()
+
+    # Try to discover the model's true context window from the server (LM
+    # Studio's native API, llama.cpp /props). Fall back to whatever's in
+    # config.toml. This is what powers the ctx% gauge in the header.
+    detected_ctx = backend.detect_context_window()
+    if detected_ctx and detected_ctx != cfg.execution.context_window:
+        print(f"[swarm] context window detected from server: {detected_ctx:,} "
+              f"(config had {cfg.execution.context_window:,}) — using detected value")
+        cfg.execution.context_window = detected_ctx
+
     _register_litellm_callback(store)
     install_signal_handlers(lambda: (store.close(), backend.stop()))
 

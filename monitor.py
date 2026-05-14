@@ -211,10 +211,11 @@ class Monitor:
         return Panel(text or "(no log yet)", title="LOG (last 10 lines)", border_style="dim")
 
     def _render_footer(self) -> Panel:
-        from rich.markup import escape
-        log_hint = f" │  log: {self.log_path}" if self.log_path else ""
-        content = escape("[q]uit (Ctrl+C)  [h]elp: see README  [d]ebug: " + str(self.log_path))
-        return Panel(content, style="dim")
+        text = Text()
+        text.append("Ctrl+C", style="bold")
+        text.append(" saves state and exits  ·  log: ", style="dim")
+        text.append(str(self.log_path), style="bold")
+        return Panel(text, style="dim")
 
 
 def plain_stdout_monitor(

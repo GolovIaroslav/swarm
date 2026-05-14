@@ -79,6 +79,53 @@ class Backend:
                 self.proc.kill()
         self.proc = None
 
+    def detect_context_window(self) -> Optional[int]:
+        """Try to detect the loaded model's actual context length.
+
+        LM Studio: GET /api/v0/models -> data[i].max_context_length or loaded_context_length
+        llama.cpp: GET /props        -> default_generation_settings.n_ctx
+
+        Returns None if no source matches. Caller should fall back to the
+        configured cfg.execution.context_window.
+        """
+        if self.cfg.backend.type == "api":
+            return None
+
+        base = self.cfg.backend.url.rstrip("/")
+        if self.cfg.backend.type == "llama_cpp":
+            lc = self.cfg.backend.llama_cpp
+            base = f"http://localhost:{lc.port}/v1"
+
+        # LM Studio native API
+        try:
+            lm_url = base.replace("/v1", "/api/v0") + "/models"
+            resp = requests.get(lm_url, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                for m in data.get("data", []):
+                    ctx = m.get("loaded_context_length") or m.get("max_context_length")
+                    if ctx:
+                        return int(ctx)
+        except Exception:
+            pass
+
+        # llama.cpp /props
+        try:
+            url = base.replace("/v1", "") + "/props"
+            resp = requests.get(url, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                n_ctx = (
+                    data.get("default_generation_settings", {}).get("n_ctx")
+                    or data.get("n_ctx")
+                )
+                if n_ctx:
+                    return int(n_ctx)
+        except Exception:
+            pass
+
+        return None
+
     def ping(self) -> list[str]:
         """GET {base_url}/models -> list of available model IDs.
 

@@ -211,6 +211,25 @@ class Store:
             row = cur.fetchone()
             return row[0] if row else 0.0
 
+    def set_metric(self, key: str, value: float) -> None:
+        with self._lock:
+            if self.conn is None:
+                return
+            self.conn.execute(
+                "INSERT INTO metrics(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, float(value)),
+            )
+            self.conn.commit()
+
+    def reset_metrics(self) -> None:
+        """Clear all metric counters (call at start of a fresh run)."""
+        with self._lock:
+            if self.conn is None:
+                return
+            self.conn.execute("DELETE FROM metrics")
+            self.conn.commit()
+
 
 @contextmanager
 def open_store(db_path: Path):
