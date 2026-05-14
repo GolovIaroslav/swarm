@@ -112,21 +112,38 @@ class Monitor:
         h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
         uptime = f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
 
-        ctx_pct = 0.0
-        if self.cfg and self.cfg.execution.context_window:
-            tokens_in = self.store.get_metric("tokens_in")
-            ctx_pct = tokens_in / self.cfg.execution.context_window * 100
+        # context usage: absolute numbers + percent, coloured by severity
+        tokens_in = int(self.store.get_metric("tokens_in"))
+        limit = self.cfg.execution.context_window if self.cfg else 0
+        if limit > 0:
+            pct = tokens_in / limit * 100
+            ctx_str = f"ctx {tokens_in:,}/{limit:,} ({pct:.0f}%)"
+            if pct >= 95:
+                ctx_color = "red bold"
+            elif pct >= 75:
+                ctx_color = "yellow bold"
+            else:
+                ctx_color = "bold"
+        else:
+            ctx_str = f"ctx {tokens_in:,}"
+            ctx_color = "bold"
 
         # rpm = completed LLM calls / elapsed minutes
         elapsed_min = max((time.time() - self._start_time) / 60, 0.01)
         requests = self.store.get_metric("llm_requests")
         rpm = requests / elapsed_min
 
-        text = (
-            f" {self.project_name}  │  {self.model_id}  │  {uptime}"
-            f"  │  ctx {ctx_pct:.0f}%  │  rpm {rpm:.1f}"
-        )
-        return Panel(Text(text, style="bold"), style="cyan")
+        header = Text()
+        header.append(f" {self.project_name}", style="bold cyan")
+        header.append("  │  ", style="dim")
+        header.append(self.model_id, style="bold")
+        header.append("  │  ", style="dim")
+        header.append(uptime, style="bold")
+        header.append("  │  ", style="dim")
+        header.append(ctx_str, style=ctx_color)
+        header.append("  │  ", style="dim")
+        header.append(f"rpm {rpm:.1f}", style="bold")
+        return Panel(header, style="cyan")
 
     def _render_tasks(self) -> Panel:
         table = Table(box=None, show_header=True, header_style="bold", expand=True)

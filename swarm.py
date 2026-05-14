@@ -37,12 +37,14 @@ os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 os.environ.setdefault("LITELLM_TELEMETRY", "False")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
 
-# Pydantic warning about method callbacks on Task — we use our own SQLite
-# checkpoint, so CrewAI's serialized checkpointing is irrelevant.
-warnings.filterwarnings(
-    "ignore",
-    message=".*method callbacks cannot be serialized.*",
-)
+# Silence noisy third-party warnings before the TUI starts up.
+# We use our own SQLite checkpoint, so CrewAI's pydantic callback warning
+# is irrelevant. Deprecations come from inside CrewAI on every agent build.
+# RuntimeWarning includes the duckduckgo_search -> ddgs rename notice.
+for _cat in (DeprecationWarning, UserWarning, RuntimeWarning, FutureWarning):
+    warnings.simplefilter("ignore", _cat)
+# also catch the few warnings that slip through child processes
+os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
 import questionary
 from crewai import Crew, Process
