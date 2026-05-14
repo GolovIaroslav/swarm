@@ -75,15 +75,46 @@ class Config:
     paths: PathsCfg = field(default_factory=PathsCfg)
 
 
+def _apply(dataclass_instance, data: dict) -> None:
+    """Shallow-merge dict keys into a dataclass, ignoring unknown keys."""
+    for key, val in data.items():
+        if hasattr(dataclass_instance, key):
+            setattr(dataclass_instance, key, val)
+
+
 def load(path: Path | str = DEFAULT_PATH) -> Config:
     """Read TOML file and return a populated Config.
 
     Falls back to defaults for any missing keys. Raises FileNotFoundError if
     the file is missing — callers should prompt the user to copy the example.
     """
-    raise NotImplementedError("implement in session 2")
+    path = Path(path)
+    with path.open("rb") as fh:
+        raw = tomllib.load(fh)
+
+    cfg = Config()
+
+    if "backend" in raw:
+        braw = raw["backend"]
+        _apply(cfg.backend, {k: v for k, v in braw.items() if k != "llama_cpp"})
+        if "llama_cpp" in braw:
+            _apply(cfg.backend.llama_cpp, braw["llama_cpp"])
+
+    if "execution" in raw:
+        _apply(cfg.execution, raw["execution"])
+
+    if "tools" in raw:
+        _apply(cfg.tools, raw["tools"])
+
+    if "ui" in raw:
+        _apply(cfg.ui, raw["ui"])
+
+    if "paths" in raw:
+        _apply(cfg.paths, raw["paths"])
+
+    return cfg
 
 
 def projects_root(cfg: Config) -> Path:
     """Resolve `[paths].projects_dir` to an absolute, expanded Path."""
-    raise NotImplementedError("implement in session 2")
+    return Path(cfg.paths.projects_dir).expanduser().resolve()
