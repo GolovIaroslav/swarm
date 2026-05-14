@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -25,6 +26,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# Disable third-party telemetry and tracing before importing crewai / litellm.
+os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("LITELLM_TELEMETRY", "False")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
 
 import questionary
 from crewai import Crew, Process
