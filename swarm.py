@@ -492,13 +492,19 @@ def main(argv: list[str] | None = None) -> int:
                 extracted = extract(raw, proj_root)
                 store.bump_metric("files_made", len(extracted))
 
+                prev = store.get_task(s.id)
+                started_at = prev.started_at if prev else None
+                retry_count = prev.retry_count if prev else 0
+
                 store.upsert_task(TaskRow(
                     id=s.id,
                     agent=s.agent_name,
                     status="done",
+                    started_at=started_at,
                     finished_at=int(time.time()),
                     output_file=str(crew_dir / (s.output_file or f"{s.id}.md")),
                     handoff=handoff,
+                    retry_count=retry_count,
                 ))
 
                 if extracted:
@@ -513,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
                     next_row = store.get_task(specs[idx + 1].id)
                     if next_row and next_row.status == "pending":
                         next_row.status = "running"
+                        next_row.started_at = int(time.time())
                         store.upsert_task(next_row)
 
             return _cb
@@ -524,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     first_row = store.get_task(pending_specs[0].id)
     if first_row:
         first_row.status = "running"
+        first_row.started_at = int(time.time())
         store.upsert_task(first_row)
 
     # ---- start monitor ----
@@ -585,6 +593,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n[swarm] Crew error: {exc}")
         logging.exception("crew.kickoff() raised an exception")
     finally:
+        # give the monitor 1s to render the final state after the last
+        # task callback fires (refresh tick is 0.5s)
+        time.sleep(1.0)
         stop_event.set()
         watchdog.stop()
         mon_thread.join(timeout=3)

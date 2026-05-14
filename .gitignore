@@ -23,3 +23,6 @@ crewai_docs_full.txt
 # keep .md files out of the repo (except README.md) — they're working notes
 *.md
 !README.md
+
+# personal config (use config.toml.example as template)
+config.toml

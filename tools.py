@@ -201,12 +201,20 @@ def tool_web_search(store: Store, cfg: Config) -> BaseTool:
 
             cached = _store.fetch_search(query, _cfg.tools.search_cache_days)
             if cached:
+                try:
+                    _store.bump_metric("searches")
+                except Exception:
+                    pass
                 return cached
 
             result = _do_search(query, _cfg)
             if result:
                 _store.cache_search(query, result)
                 _task_count[0] += 1
+                try:
+                    _store.bump_metric("searches")
+                except Exception:
+                    pass
             return result or "No results found."
 
     return WebSearchTool()
