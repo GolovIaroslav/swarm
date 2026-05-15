@@ -214,8 +214,18 @@ def add(a, b):
 _MD_HEADING_NO_EXT = """
 ## not_a_file
 ```python
-# should be ignored
 x = 1
+```
+"""
+
+_MD_NO_HEADING = """
+```python
+def solve():
+    return 42
+```
+
+```javascript
+console.log("hi");
 ```
 """
 
@@ -263,11 +273,22 @@ def test_extract_three_blocks(tmp_path):
     assert names == {"a.py", "b.py", "c.py"}
 
 
-def test_extract_heading_no_extension_ignored(tmp_path):
+def test_extract_heading_no_extension_becomes_snippet(tmp_path):
     from extractor import extract
 
     results = extract(_MD_HEADING_NO_EXT, tmp_path)
-    assert results == []
+    assert len(results) == 1
+    assert results[0].path.name == "snippet_1.py"
+
+
+def test_extract_no_heading_snippet_fallback(tmp_path):
+    from extractor import extract
+
+    results = extract(_MD_NO_HEADING, tmp_path)
+    assert len(results) == 2
+    names = [r.path.name for r in results]
+    assert "snippet_1.py" in names
+    assert "snippet_2.js" in names
 
 
 def test_extract_path_escape_blocked(tmp_path):

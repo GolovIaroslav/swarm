@@ -9,6 +9,8 @@ Agents are instructed to emit code like:
 
 This module walks that markdown and writes each block under projects/<name>/src/.
 Refuses to escape the project root. Run after every coder/tester/reviewer task.
+
+Blocks without a path heading fall back to src/snippet_N.<ext>.
 """
 
 from __future__ import annotations
@@ -32,16 +34,40 @@ _FENCE_CLOSE = re.compile(r"^```$", re.MULTILINE)
 
 _PATH_LIKE = re.compile(r"^[\w./-]+\.\w+$")
 
+_LANG_EXT: dict[str, str] = {
+    "python": "py", "py": "py",
+    "javascript": "js", "js": "js", "jsx": "jsx",
+    "typescript": "ts", "ts": "ts", "tsx": "tsx",
+    "shell": "sh", "bash": "sh", "sh": "sh", "zsh": "sh",
+    "rust": "rs",
+    "go": "go",
+    "java": "java",
+    "c": "c",
+    "cpp": "cpp", "c++": "cpp",
+    "html": "html",
+    "css": "css",
+    "json": "json",
+    "yaml": "yaml", "yml": "yaml",
+    "toml": "toml",
+    "sql": "sql",
+}
+
+
+def _lang_to_ext(lang: str) -> str:
+    return _LANG_EXT.get(lang.lower(), "txt")
+
 
 def extract(markdown: str, dest_root: Path) -> list[ExtractedFile]:
     """Parse markdown and write each fenced code block to its named file.
 
     Filename comes from the heading immediately preceding the block (## name).
-    Returns a list of written files. Skips blocks with no filename heading.
+    Falls back to src/snippet_N.<ext> when no path heading is present.
+    Returns a list of written files.
     """
     results: list[ExtractedFile] = []
     lines = markdown.splitlines()
     last_heading: str = ""
+    snippet_n = 0
     i = 0
 
     while i < len(lines):
@@ -60,7 +86,6 @@ def extract(markdown: str, dest_root: Path) -> list[ExtractedFile]:
         mf = _FENCE_OPEN.match(line)
         if mf:
             lang = mf.group(1) or ""
-            # collect body until closing ```
             body_lines = []
             i += 1
             while i < len(lines):
@@ -70,15 +95,20 @@ def extract(markdown: str, dest_root: Path) -> list[ExtractedFile]:
                 i += 1
             i += 1  # skip closing fence
 
-            if not last_heading:
-                continue  # no filename heading — skip
-
             code = "\n".join(body_lines)
             if not code.strip():
                 continue
 
+            if last_heading:
+                rel = last_heading
+                last_heading = ""  # consume heading
+            else:
+                snippet_n += 1
+                ext = _lang_to_ext(lang)
+                rel = f"src/snippet_{snippet_n}.{ext}"
+
             try:
-                target = _safe_path(dest_root, last_heading)
+                target = _safe_path(dest_root, rel)
             except ValueError:
                 continue
 
@@ -89,7 +119,6 @@ def extract(markdown: str, dest_root: Path) -> list[ExtractedFile]:
                 bytes_written=len(code.encode()),
                 language=lang,
             ))
-            last_heading = ""  # consume heading
             continue
 
         i += 1

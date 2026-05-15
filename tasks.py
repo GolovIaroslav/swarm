@@ -23,14 +23,18 @@ Do NOT dump full code into HANDOFF; the next agent will read files directly.
 """.strip()
 
 _CODE_FORMAT_INSTRUCTION = """
-When writing code, output each file as:
+CRITICAL: When writing code, output EVERY file using EXACTLY this format:
 
-## path/to/file.py
+## src/filename.py
 ```python
 <code here>
 ```
 
-Use the exact relative path as the heading. This lets the extractor save real files.
+Rules you MUST follow:
+- The heading MUST use the exact relative path starting with src/ (e.g. `## src/main.py`)
+- NEVER use generic headings like `## Solution`, `## Implementation`, `## Code`
+- Every fenced code block MUST be immediately preceded by its path heading
+- If you skip the path heading, the file will NOT be saved to disk
 """.strip()
 
 
