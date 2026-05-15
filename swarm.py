@@ -106,6 +106,28 @@ def install_signal_handlers(on_exit) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Project name validation
+# ---------------------------------------------------------------------------
+
+def _validate_project_name(name: str) -> "str | None":
+    """Return an error string if name is invalid, else None."""
+    if not name:
+        return "Project name cannot be empty."
+    if "/" in name or "\\" in name:
+        return "Project name must not contain '/' or '\\'."
+    if ".." in name:
+        return "Project name must not contain '..'."
+    return None
+
+
+def _warn_project_name(name: str) -> None:
+    if " " in name:
+        print(f"  [warn] project name contains spaces — directory will be '{name}'")
+    if any(ord(c) > 127 for c in name):
+        print(f"  [warn] project name contains non-ASCII characters")
+
+
+# ---------------------------------------------------------------------------
 # Setup screen
 # ---------------------------------------------------------------------------
 
@@ -132,6 +154,12 @@ def setup_screen(cfg: Config) -> Choices:
     if not project:
         sys.exit(0)
     project = project.strip()
+
+    err = _validate_project_name(project)
+    if err:
+        print(f"[swarm] {err}")
+        sys.exit(1)
+    _warn_project_name(project)
 
     # Resume detection
     db_path = proj_root / project / "_state.db"
@@ -567,6 +595,12 @@ def _resolve_choices(cfg: Config, args: argparse.Namespace) -> Choices:
     project = (args.project or questionary.text("Project name:").ask() or "").strip()
     if not project:
         sys.exit(0)
+
+    err = _validate_project_name(project)
+    if err:
+        print(f"[swarm] {err}", file=sys.stderr)
+        sys.exit(1)
+    _warn_project_name(project)
 
     # resume detection (also handles --resume / --no-resume)
     db_path = proj_root / project / "_state.db"

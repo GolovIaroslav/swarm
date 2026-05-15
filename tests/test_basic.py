@@ -428,3 +428,39 @@ def test_custom_empty_raises_or_returns_empty():
 
     specs = custom("test goal", [])
     assert specs == []
+
+
+# ===========================================================================
+# project name validation
+# ===========================================================================
+
+def test_validate_project_name_empty():
+    from swarm import _validate_project_name
+    assert _validate_project_name("") is not None
+
+
+def test_validate_project_name_slash():
+    from swarm import _validate_project_name
+    assert _validate_project_name("foo/bar") is not None
+
+
+def test_validate_project_name_backslash():
+    from swarm import _validate_project_name
+    assert _validate_project_name("foo\\bar") is not None
+
+
+def test_validate_project_name_dotdot():
+    from swarm import _validate_project_name
+    assert _validate_project_name("../evil") is not None
+
+
+def test_validate_project_name_valid():
+    from swarm import _validate_project_name
+    assert _validate_project_name("my_project") is None
+    assert _validate_project_name("my-project-2") is None
+
+
+def test_validate_project_name_spaces_allowed():
+    from swarm import _validate_project_name
+    # spaces are a warning, not an error
+    assert _validate_project_name("my project") is None
