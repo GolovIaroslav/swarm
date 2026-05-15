@@ -38,7 +38,7 @@ class Backend:
 
     def start(self) -> None:
         """Bring the server up. For llama_cpp spawn the subprocess.
-        For lm_studio / custom ping the server.
+        For lm_studio / custom ping the server and prefer a LOADED model.
         For api verify the API key is present in the environment.
         """
         btype = self.cfg.backend.type
@@ -57,17 +57,56 @@ class Backend:
                     f"Env var {api.api_key_env!r} is not set. "
                     "Export your provider API key before running."
                 )
-            # model_id is the bare provider/model string for display
             self.model_id = api.model
         else:
-            # lm_studio or custom — just ping to verify
-            models = self.ping()
+            # lm_studio or custom — check the LM Studio native API first to
+            # pick a LOADED model. If LM Studio isn't running OR no model is
+            # loaded, fail fast with a clear message instead of letting the
+            # first agent crash mid-thought.
+            loaded = self._loaded_via_lm_studio()
+            if loaded is not None:
+                if not loaded:
+                    raise RuntimeError(
+                        "LM Studio is running but no model is loaded. "
+                        "Open LM Studio, load a model (the 'Local Server' tab), "
+                        "then run swarm again."
+                    )
+                self.model_id = loaded[0]
+                return
+            # fall back to standard /v1/models for non-LM-Studio servers
+            try:
+                models = self.ping()
+            except Exception as e:
+                raise RuntimeError(
+                    f"Could not reach the LLM server at {self.cfg.backend.url}. "
+                    f"Is it running? ({e})"
+                )
             if not models:
                 raise RuntimeError(
-                    f"No models found at {self.cfg.backend.url}. "
-                    "Is LM Studio running with a loaded model?"
+                    f"No models advertised at {self.cfg.backend.url}. "
+                    "If this is LM Studio, load a model and try again."
                 )
             self.model_id = models[0]
+
+    def _loaded_via_lm_studio(self) -> Optional[list[str]]:
+        """LM Studio's /api/v0/models exposes a `state` field per model.
+        Returns the list of model ids whose state is 'loaded'.
+        Returns None if the endpoint isn't available (i.e. not LM Studio)."""
+        try:
+            base = self.cfg.backend.url.rstrip("/")
+            lm_url = base.replace("/v1", "/api/v0") + "/models"
+            resp = requests.get(lm_url, timeout=3)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if not isinstance(data, dict) or "data" not in data:
+                return None
+            return [
+                m.get("id", "") for m in data["data"]
+                if m.get("state") == "loaded" and m.get("id")
+            ]
+        except Exception:
+            return None
 
     def stop(self) -> None:
         """Kill the spawned subprocess (if any). Safe to call multiple times."""
