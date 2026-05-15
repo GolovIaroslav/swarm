@@ -464,3 +464,216 @@ def test_validate_project_name_spaces_allowed():
     from swarm import _validate_project_name
     # spaces are a warning, not an error
     assert _validate_project_name("my project") is None
+
+
+# ===========================================================================
+# subcommands: list / rm
+# ===========================================================================
+
+def test_cmd_list_empty_dir(tmp_path, capsys):
+    from config import Config
+    from swarm import _cmd_list
+
+    cfg = Config()
+    cfg.paths.projects_dir = str(tmp_path / "projects")
+    rc = _cmd_list(cfg)
+    assert rc == 0
+
+
+def test_cmd_list_missing_dir(tmp_path, capsys):
+    from config import Config
+    from swarm import _cmd_list
+
+    cfg = Config()
+    cfg.paths.projects_dir = str(tmp_path / "does_not_exist")
+    rc = _cmd_list(cfg)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No projects" in out
+
+
+def test_cmd_rm_missing_project(tmp_path, capsys):
+    from config import Config
+    from swarm import _cmd_rm
+
+    cfg = Config()
+    cfg.paths.projects_dir = str(tmp_path / "projects")
+    rc = _cmd_rm(cfg, "nonexistent", assume_yes=True)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "No such project" in out
+
+
+def test_cmd_rm_existing_project(tmp_path):
+    from config import Config
+    from swarm import _cmd_rm
+
+    proj_dir = tmp_path / "projects" / "victim"
+    proj_dir.mkdir(parents=True)
+    (proj_dir / "marker.txt").write_text("x")
+
+    cfg = Config()
+    cfg.paths.projects_dir = str(tmp_path / "projects")
+
+    rc = _cmd_rm(cfg, "victim", assume_yes=True)
+    assert rc == 0
+    assert not proj_dir.exists()
+
+
+# ===========================================================================
+# backend: api type validation
+# ===========================================================================
+
+def test_backend_api_missing_env_var(monkeypatch):
+    from backend import Backend
+    from config import Config
+
+    cfg = Config()
+    cfg.backend.type = "api"
+    cfg.backend.api.model = "openrouter/some/model"
+    cfg.backend.api.api_key_env = "FAKE_PROVIDER_KEY_THAT_DOES_NOT_EXIST"
+
+    monkeypatch.delenv("FAKE_PROVIDER_KEY_THAT_DOES_NOT_EXIST", raising=False)
+
+    b = Backend(cfg=cfg)
+    with pytest.raises(RuntimeError, match="FAKE_PROVIDER_KEY_THAT_DOES_NOT_EXIST"):
+        b.start()
+
+
+def test_backend_api_empty_model():
+    from backend import Backend
+    from config import Config
+
+    cfg = Config()
+    cfg.backend.type = "api"
+    cfg.backend.api.model = ""
+
+    b = Backend(cfg=cfg)
+    with pytest.raises(RuntimeError, match="model"):
+        b.start()
+
+
+def test_backend_api_with_env_var_set(monkeypatch):
+    from backend import Backend
+    from config import Config
+
+    cfg = Config()
+    cfg.backend.type = "api"
+    cfg.backend.api.model = "openrouter/some/model"
+    cfg.backend.api.api_key_env = "FAKE_PROVIDER_KEY_PRESENT"
+
+    monkeypatch.setenv("FAKE_PROVIDER_KEY_PRESENT", "sk-test")
+
+    b = Backend(cfg=cfg)
+    b.start()
+    assert b.model_id == "openrouter/some/model"
+
+
+# ===========================================================================
+# search cache TTL
+# ===========================================================================
+
+def test_search_cache_expired(tmp_path):
+    from state import Store
+
+    s = Store(tmp_path / "test.db")
+    s.open()
+
+    s.cache_search("expired_query", "old result")
+    # backdate the timestamp to 8 days ago
+    eight_days_ago = int(time.time()) - 8 * 86400
+    s.conn.execute(
+        "UPDATE search_cache SET ts=? WHERE query=?",
+        (eight_days_ago, "expired_query"),
+    )
+    s.conn.commit()
+
+    assert s.fetch_search("expired_query", ttl_days=7) is None
+    # but with ttl=9 days it should still be there
+    assert s.fetch_search("expired_query", ttl_days=9) == "old result"
+    s.close()
+
+
+def test_search_cache_fresh_hit(tmp_path):
+    from state import Store
+
+    s = Store(tmp_path / "test.db")
+    s.open()
+
+    s.cache_search("fresh_query", "fresh result")
+    assert s.fetch_search("fresh_query", ttl_days=7) == "fresh result"
+    s.close()
+
+
+# ===========================================================================
+# web search per-task cap
+# ===========================================================================
+
+def test_web_search_cap_per_task(tmp_path, monkeypatch):
+    from config import Config
+    from state import Store
+    import tools as tools_mod
+
+    s = Store(tmp_path / "test.db")
+    s.open()
+
+    cfg = Config()
+    cfg.tools.search_max_per_task = 5
+
+    call_count = [0]
+    def fake_ddg(query):
+        call_count[0] += 1
+        return f"result for {query}"
+    monkeypatch.setattr(tools_mod, "_ddg_search", fake_ddg)
+
+    tool = tools_mod.tool_web_search(s, cfg)
+
+    # first 5 unique queries — all should pass through to fake_ddg
+    for i in range(5):
+        out = tool._run(query=f"q_{i}")
+        assert "result for" in out
+
+    # 6th, 7th — should be capped, fake_ddg not called again
+    for i in range(5, 7):
+        out = tool._run(query=f"q_{i}")
+        assert "cap reached" in out.lower()
+
+    assert call_count[0] == 5
+    s.close()
+
+
+def test_web_search_cap_does_not_count_cache_hits(tmp_path, monkeypatch):
+    from config import Config
+    from state import Store
+    import tools as tools_mod
+
+    s = Store(tmp_path / "test.db")
+    s.open()
+
+    cfg = Config()
+    cfg.tools.search_max_per_task = 3
+
+    call_count = [0]
+    def fake_ddg(query):
+        call_count[0] += 1
+        return f"result for {query}"
+    monkeypatch.setattr(tools_mod, "_ddg_search", fake_ddg)
+
+    tool = tools_mod.tool_web_search(s, cfg)
+
+    # first call — real search
+    tool._run(query="repeat")
+    # repeat — cache hit, counter must not bump
+    for _ in range(10):
+        out = tool._run(query="repeat")
+        assert "result for repeat" in out
+
+    # after 10 cache hits, fresh queries should still work up to the cap
+    tool._run(query="other_1")
+    tool._run(query="other_2")
+
+    # one more fresh query should be capped (3 fresh = limit)
+    out = tool._run(query="other_3")
+    assert "cap reached" in out.lower()
+
+    s.close()
