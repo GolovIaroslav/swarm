@@ -58,6 +58,10 @@ class Monitor:
         self.model_id = model_id
         self.cfg = cfg
         self._start_time: float = time.time()
+        self._last_tokens: int = 0
+        self._last_sample_time: float = time.time()
+        self._tps: float = 0.0
+        self._ctx_warned: bool = False
 
     def render(self) -> Layout:
         """Build the rich.layout.Layout tree for the current frame."""
@@ -114,6 +118,7 @@ class Monitor:
 
         # context usage: absolute numbers + percent, coloured by severity
         tokens_in = int(self.store.get_metric("tokens_in"))
+        tokens_out = int(self.store.get_metric("tokens_out"))
         limit = self.cfg.execution.context_window if self.cfg else 0
         if limit > 0:
             pct = tokens_in / limit * 100
@@ -125,13 +130,32 @@ class Monitor:
             else:
                 ctx_color = "bold"
         else:
+            pct = 0.0
             ctx_str = f"ctx {tokens_in:,}"
             ctx_color = "bold"
+
+        # one-time warning at 90%+ context usage
+        if not self._ctx_warned and limit > 0 and pct >= 90.0:
+            self._ctx_warned = True
+            import logging
+            logging.warning(
+                f"[swarm] context window at {pct:.0f}% ({tokens_in:,}/{limit:,}) — "
+                "wrapping up soon recommended"
+            )
 
         # rpm = completed LLM calls / elapsed minutes
         elapsed_min = max((time.time() - self._start_time) / 60, 0.01)
         requests = self.store.get_metric("llm_requests")
         rpm = requests / elapsed_min
+
+        # tps = delta tokens / delta time, sampled every 5 seconds
+        now_t = time.time()
+        total_tok = tokens_in + tokens_out
+        dt = now_t - self._last_sample_time
+        if dt >= 5.0:
+            self._tps = (total_tok - self._last_tokens) / dt
+            self._last_tokens = total_tok
+            self._last_sample_time = now_t
 
         header = Text()
         header.append(f" {self.project_name}", style="bold cyan")
@@ -143,6 +167,8 @@ class Monitor:
         header.append(ctx_str, style=ctx_color)
         header.append("  │  ", style="dim")
         header.append(f"rpm {rpm:.1f}", style="bold")
+        header.append("  │  ", style="dim")
+        header.append(f"tps {self._tps:.1f}", style="bold")
         return Panel(header, style="cyan")
 
     def _render_tasks(self) -> Panel:
