@@ -494,6 +494,7 @@ def _add_run_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-monitor", action="store_true", help="Disable the rich live panel")
     p.add_argument("--debug", action="store_true", help="Also write full LiteLLM trace to _logs/debug.log")
     p.add_argument("-y", "--yes", action="store_true", help="Skip 'Start?' confirmation")
+    p.add_argument("--dry-run", action="store_true", help="Print the plan and exit without running anything")
 
 
 # ---------------------------------------------------------------------------
@@ -663,11 +664,16 @@ def _resolve_choices(cfg: Config, args: argparse.Namespace) -> Choices:
             print("[swarm] No agents selected. Exiting.")
             sys.exit(0)
 
-    process_choice = args.process or questionary.select(
-        "Process mode:",
-        choices=["sequential", "hierarchical"],
-        default="sequential",
-    ).ask() or "sequential"
+    if args.process:
+        process_choice = args.process
+    elif getattr(args, "dry_run", False):
+        process_choice = "sequential"
+    else:
+        process_choice = questionary.select(
+            "Process mode:",
+            choices=["sequential", "hierarchical"],
+            default="sequential",
+        ).ask() or "sequential"
 
     return Choices(
         project=project,
@@ -683,6 +689,22 @@ def _cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     # If no CLI args at all, run the full interactive TUI for back-compat.
     fully_interactive = not any([args.project, args.preset, args.goal])
     choices = setup_screen(cfg) if fully_interactive else _resolve_choices(cfg, args)
+
+    if getattr(args, "dry_run", False):
+        specs = _specs_for(choices)
+        agent_names = _agent_names_for(choices)
+        est_min = len(specs) * 10
+        print(f"\n[dry-run] Project:  {choices.project}")
+        print(f"[dry-run] Preset:   {choices.preset}")
+        print(f"[dry-run] Goal:     {choices.goal}")
+        print(f"[dry-run] Agents:   {', '.join(agent_names)}")
+        print(f"[dry-run] Tasks:    {len(specs)}  (est. ~{est_min} min)")
+        print(f"[dry-run] Process:  {choices.process}")
+        print()
+        for i, spec in enumerate(specs, 1):
+            print(f"  {i}. [{spec.agent_name}] {spec.id}")
+        print()
+        return 0
 
     print("\n[swarm] Starting backend...")
     backend = Backend(cfg=cfg)
