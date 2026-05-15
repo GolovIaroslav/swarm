@@ -642,6 +642,100 @@ def test_web_search_cap_per_task(tmp_path, monkeypatch):
     s.close()
 
 
+# ===========================================================================
+# backend: per-role model override
+# ===========================================================================
+
+def test_backend_llm_override_local_wraps_openai_prefix():
+    from backend import Backend
+    from config import Config
+
+    cfg = Config()
+    cfg.backend.type = "lm_studio"
+    cfg.backend.url = "http://localhost:1234/v1"
+
+    b = Backend(cfg=cfg)
+    b.model_id = "default-model"
+
+    llm_default = b.llm()
+    llm_override = b.llm(model_override="other/coder-model")
+
+    assert llm_default.model == "openai/default-model"
+    assert llm_override.model == "openai/other/coder-model"
+
+
+def test_backend_llm_override_strips_existing_openai_prefix():
+    from backend import Backend
+    from config import Config
+
+    cfg = Config()
+    cfg.backend.type = "lm_studio"
+
+    b = Backend(cfg=cfg)
+    b.model_id = "anything"
+
+    llm = b.llm(model_override="openai/already-prefixed")
+    assert llm.model == "openai/already-prefixed"
+    # not "openai/openai/already-prefixed"
+
+
+def test_backend_llm_override_api_passes_full_model_string(monkeypatch):
+    """For api backend, the override must be passed as-is (provider prefix
+    intact) into LLM(). CrewAI internally strips the prefix on LLM.model,
+    so we capture the constructor kwargs instead of inspecting .model."""
+    import backend as backend_mod
+    from backend import Backend
+    from config import Config
+
+    captured: dict = {}
+
+    class _FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.model = kwargs.get("model")
+
+    monkeypatch.setattr(backend_mod, "LLM", _FakeLLM)
+
+    cfg = Config()
+    cfg.backend.type = "api"
+    cfg.backend.api.model = "openrouter/default/model"
+    cfg.backend.api.api_key_env = "TEST_API_KEY"
+    monkeypatch.setenv("TEST_API_KEY", "sk-x")
+
+    b = Backend(cfg=cfg)
+    b.model_id = cfg.backend.api.model
+
+    b.llm(model_override="openrouter/qwen/qwen-2.5-coder-32b-instruct")
+    assert captured["model"] == "openrouter/qwen/qwen-2.5-coder-32b-instruct"
+    assert captured["api_key"] == "sk-x"
+
+
+def test_per_role_override_wiring(monkeypatch):
+    """Simulates the per-role wiring loop from swarm._cmd_run."""
+    from backend import Backend
+    from config import Config
+
+    cfg = Config()
+    cfg.backend.type = "lm_studio"
+    cfg.backend.per_role = {"coder": "specialised/coder-model"}
+
+    b = Backend(cfg=cfg)
+    b.model_id = "default-model"
+
+    # mirror the loop in _cmd_run
+    needed_roles = {"architect", "coder"}
+    role_llms = {}
+    for role in needed_roles:
+        override = cfg.backend.per_role.get(role)
+        if override:
+            role_llms[role] = b.llm(model_override=override)
+        else:
+            role_llms[role] = b.llm()
+
+    assert role_llms["architect"].model == "openai/default-model"
+    assert role_llms["coder"].model == "openai/specialised/coder-model"
+
+
 def test_web_search_cap_does_not_count_cache_hits(tmp_path, monkeypatch):
     from config import Config
     from state import Store
