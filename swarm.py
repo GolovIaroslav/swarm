@@ -239,6 +239,25 @@ def setup_screen(cfg: Config) -> Choices:
 # Pre-flight checks
 # ---------------------------------------------------------------------------
 
+def _check_json_capable(raw_text: str) -> bool:
+    """Return True if raw_text parses as JSON after stripping markdown fences.
+
+    Models often wrap JSON in ```json ... ``` or in stray backticks. We strip
+    both before attempting json.loads. Used by preflight() to decide whether
+    hierarchical mode is safe.
+    """
+    if not raw_text:
+        return False
+    text = raw_text.strip().strip("`").strip()
+    if text.startswith("json"):
+        text = text[4:].strip()
+    try:
+        json.loads(text)
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
 def preflight(backend: Backend, cfg: Config, choices: Choices, skip_confirm: bool = False) -> bool:
     """Ping LLM, JSON test, web-search test. Returns True if user confirms run."""
     print("\n[preflight] Checking environment...\n")
@@ -270,17 +289,14 @@ def preflight(backend: Backend, cfg: Config, choices: Choices, skip_confirm: boo
                 max_tokens=30,
             )
             raw_text = (resp.choices[0].message.content or "").strip()
-            raw_text = raw_text.strip("`")
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:].strip()
-            json.loads(raw_text)
-            print("  ✓  JSON output: OK")
-        except json.JSONDecodeError:
-            print(f"  ⚠  JSON output: model returned non-JSON ({raw_text!r})")
-            if choices.process == "hierarchical" and not skip_confirm:
-                print("     Hierarchical mode needs reliable JSON — consider switching to sequential.")
-                if questionary.confirm("Switch to sequential?", default=True).ask():
-                    choices.process = "sequential"
+            if _check_json_capable(raw_text):
+                print("  ✓  JSON output: OK")
+            else:
+                print(f"  ⚠  JSON output: model returned non-JSON ({raw_text!r})")
+                if choices.process == "hierarchical" and not skip_confirm:
+                    print("     Hierarchical mode needs reliable JSON — consider switching to sequential.")
+                    if questionary.confirm("Switch to sequential?", default=True).ask():
+                        choices.process = "sequential"
         except Exception as e:
             print(f"  ⚠  JSON test skipped: {e}")
     else:

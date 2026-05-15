@@ -467,6 +467,39 @@ def test_validate_project_name_spaces_allowed():
 
 
 # ===========================================================================
+# json capability check (preflight)
+# ===========================================================================
+
+def test_json_capable_clean_object():
+    from swarm import _check_json_capable
+    assert _check_json_capable('{"status":"ok"}') is True
+
+
+def test_json_capable_with_backticks():
+    from swarm import _check_json_capable
+    assert _check_json_capable('`{"status":"ok"}`') is True
+
+
+def test_json_capable_with_fenced_json():
+    from swarm import _check_json_capable
+    assert _check_json_capable('```json\n{"status":"ok"}\n```'.strip("\n").strip("`")) is True
+    # also the realistic shape we strip in _check_json_capable
+    assert _check_json_capable('json\n{"status":"ok"}') is True
+
+
+def test_json_capable_rejects_prose():
+    from swarm import _check_json_capable
+    assert _check_json_capable("Sure, here is the JSON: {status: ok}") is False
+    assert _check_json_capable("ok") is False
+    assert _check_json_capable("") is False
+
+
+def test_json_capable_array_ok():
+    from swarm import _check_json_capable
+    assert _check_json_capable("[1, 2, 3]") is True
+
+
+# ===========================================================================
 # subcommands: list / rm
 # ===========================================================================
 
