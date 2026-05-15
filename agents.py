@@ -11,6 +11,8 @@ modules import roles by string name ("researcher", "architect", ...).
 
 from __future__ import annotations
 
+import warnings
+
 from crewai import Agent
 
 from config import Config
@@ -184,35 +186,42 @@ def build(name: str, llm, tools_by_name: dict, cfg: Config, verbose: bool = True
     tool_names = ROLE_TOOLS.get(name, ())
     agent_tools = [tools_by_name[t] for t in tool_names if t in tools_by_name]
 
-    return Agent(
-        role=p["role"],
-        goal=p["goal"],
-        backstory=p["backstory"],
-        tools=agent_tools,
-        llm=llm,
-        verbose=verbose,
-        allow_delegation=False,
-        respect_context_window=True,
-        max_iter=cfg.execution.max_iter,
-        max_retry_limit=cfg.execution.max_retry,
-        max_execution_time=cfg.execution.task_timeout_minutes * 60,
-        max_rpm=cfg.execution.max_rpm,
-    )
+    # CrewAI fires DeprecationWarning/UserWarning from deprecated decorators on
+    # every Agent build; module-level filters miss them because the underlying
+    # __init_subclass__ hook re-enables them. Suppress at the call site.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return Agent(
+            role=p["role"],
+            goal=p["goal"],
+            backstory=p["backstory"],
+            tools=agent_tools,
+            llm=llm,
+            verbose=verbose,
+            allow_delegation=False,
+            respect_context_window=True,
+            max_iter=cfg.execution.max_iter,
+            max_retry_limit=cfg.execution.max_retry,
+            max_execution_time=cfg.execution.task_timeout_minutes * 60,
+            max_rpm=cfg.execution.max_rpm,
+        )
 
 
 def manager(llm, cfg: Config, verbose: bool = True) -> Agent:
     """Construct the hierarchical manager agent (allow_delegation=True)."""
-    return Agent(
-        role=_MANAGER_ROLE,
-        goal=_MANAGER_GOAL,
-        backstory=_MANAGER_BACKSTORY,
-        tools=[],
-        llm=llm,
-        verbose=verbose,
-        allow_delegation=True,
-        respect_context_window=True,
-        max_iter=cfg.execution.max_iter,
-        max_retry_limit=cfg.execution.max_retry,
-        max_execution_time=cfg.execution.task_timeout_minutes * 60,
-        max_rpm=cfg.execution.max_rpm,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return Agent(
+            role=_MANAGER_ROLE,
+            goal=_MANAGER_GOAL,
+            backstory=_MANAGER_BACKSTORY,
+            tools=[],
+            llm=llm,
+            verbose=verbose,
+            allow_delegation=True,
+            respect_context_window=True,
+            max_iter=cfg.execution.max_iter,
+            max_retry_limit=cfg.execution.max_retry,
+            max_execution_time=cfg.execution.task_timeout_minutes * 60,
+            max_rpm=cfg.execution.max_rpm,
+        )
