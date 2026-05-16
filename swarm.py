@@ -53,6 +53,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 import agents as ag
+import backends_store as bs
 import presets as pr
 from backend import Backend
 from config import Config, load, projects_root
@@ -76,6 +77,7 @@ class Choices:
     roles: list[str] = field(default_factory=list)
     process: str = "sequential"
     resume: bool = False
+    backend: str = ""        # name of the saved backend (or "__config__")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +108,244 @@ def install_signal_handlers(on_exit) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Backend wizard / picker
+# ---------------------------------------------------------------------------
+
+_API_PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
+    "openrouter": ("openrouter/anthropic/claude-3.5-sonnet", "OPENROUTER_API_KEY"),
+    "anthropic":  ("anthropic/claude-3-5-sonnet-20241022",   "ANTHROPIC_API_KEY"),
+    "openai":     ("openai/gpt-4o",                          "OPENAI_API_KEY"),
+    "groq":       ("groq/llama-3.1-70b-versatile",           "GROQ_API_KEY"),
+    "gemini":     ("gemini/gemini-2.0-flash-exp",            "GEMINI_API_KEY"),
+    "nvidia_nim": ("nvidia_nim/meta/llama-3.1-405b-instruct", "NVIDIA_API_KEY"),
+    "other":      ("", ""),
+}
+
+
+def _wizard_lm_studio() -> tuple[dict, str]:
+    url = questionary.text(
+        "LM Studio URL:", default="http://localhost:1234/v1"
+    ).ask() or "http://localhost:1234/v1"
+    return {"type": "lm_studio", "url": url.strip()}, "lm_studio"
+
+
+def _wizard_llama_cpp() -> tuple[dict, str] | tuple[None, None]:
+    binary = questionary.path("Path to llama-server binary:").ask()
+    if not binary:
+        return None, None
+    model = questionary.path("Path to model (.gguf):").ask()
+    if not model:
+        return None, None
+
+    ctx_raw  = questionary.text("Context size:", default="32768").ask() or "32768"
+    ngl_raw  = questionary.text("GPU layers (-ngl, 0 = CPU only):", default="35").ask() or "35"
+    port_raw = questionary.text("Port:", default="8090").ask() or "8090"
+
+    extra = questionary.text(
+        "Extra llama-server flags (space-separated, Enter to skip):"
+    ).ask() or ""
+    ld = questionary.text(
+        "LD_LIBRARY_PATH (Enter to skip):"
+    ).ask() or ""
+
+    entry = {
+        "type": "llama_cpp",
+        "llama_cpp": {
+            "binary": binary.strip(),
+            "model":  model.strip(),
+            "ctx":    int(ctx_raw),
+            "ngl":    int(ngl_raw),
+            "port":   int(port_raw),
+            "extra_args": extra.split() if extra.strip() else [],
+            "env":    {"LD_LIBRARY_PATH": ld.strip()} if ld.strip() else {},
+        },
+    }
+    suggested = Path(model).stem.split(".")[0][:24] or "llama_cpp"
+    return entry, suggested
+
+
+def _wizard_api() -> tuple[dict, str] | tuple[None, None]:
+    provider = questionary.select(
+        "Provider:",
+        choices=list(_API_PROVIDER_DEFAULTS.keys()),
+    ).ask()
+    if not provider:
+        return None, None
+
+    model_default, env_default = _API_PROVIDER_DEFAULTS[provider]
+    model = questionary.text("Model:", default=model_default).ask()
+    if not model:
+        return None, None
+    env_var = questionary.text("API key env var:", default=env_default).ask() or ""
+
+    if env_var and not os.environ.get(env_var):
+        print(f"  [warn] env var {env_var!r} is not set yet.")
+        print(f"         Run: export {env_var}=<your-key>  before launching.")
+
+    entry = {
+        "type": "api",
+        "api": {
+            "model": model.strip(),
+            "api_key_env": env_var.strip(),
+            "base_url": "",
+        },
+    }
+    suggested = f"{provider}_{model.strip().split('/')[-1][:16]}"
+    return entry, suggested
+
+
+def _wizard_custom() -> tuple[dict, str] | tuple[None, None]:
+    url = questionary.text(
+        "Base URL (OpenAI-compatible):", default="http://localhost:5000/v1"
+    ).ask()
+    if not url:
+        return None, None
+    return {"type": "custom", "url": url.strip()}, "custom"
+
+
+def backend_wizard() -> "str | None":
+    """Walk the user through creating a new backend; save it; return the name."""
+    btype = questionary.select(
+        "Backend type:",
+        choices=[
+            questionary.Choice(title="LM Studio  (already running at localhost:1234)", value="lm_studio"),
+            questionary.Choice(title="llama.cpp  (swarm will spawn llama-server)",      value="llama_cpp"),
+            questionary.Choice(title="Remote API (OpenRouter / Anthropic / OpenAI / Groq / Gemini / ...)", value="api"),
+            questionary.Choice(title="Custom OpenAI-compatible URL",                     value="custom"),
+        ],
+    ).ask()
+    if not btype:
+        return None
+
+    builders = {
+        "lm_studio": _wizard_lm_studio,
+        "llama_cpp": _wizard_llama_cpp,
+        "api":       _wizard_api,
+        "custom":    _wizard_custom,
+    }
+    entry, suggested = builders[btype]()
+    if entry is None:
+        return None
+
+    while True:
+        name = questionary.text("Save this backend as:", default=suggested or "default").ask()
+        if not name:
+            return None
+        name = name.strip()
+        err = _validate_backend_name(name)
+        if err:
+            print(f"  [error] {err}")
+            continue
+        if bs.get(name):
+            ow = questionary.confirm(f"'{name}' already exists. Overwrite?", default=False).ask()
+            if not ow:
+                continue
+        bs.save(name, entry)
+        print(f"  [swarm] saved backend '{name}'")
+        return name
+
+
+def _validate_backend_name(name: str) -> "str | None":
+    if not name:
+        return "name cannot be empty"
+    if "/" in name or "\\" in name or ".." in name:
+        return "name must not contain /, \\ or .."
+    return None
+
+
+def pick_backend(cfg: Config, allow_config_fallback: bool = True) -> "str | None":
+    """Interactive picker; returns the chosen saved backend name or None.
+
+    If saved backends exist, lists them (sorted by recency) + Add new / Delete.
+    If none exist, runs the wizard directly.
+    `allow_config_fallback` controls whether we offer "Use config.toml [backend]".
+    """
+    names = bs.list_names()
+
+    if not names:
+        # first-time setup or fresh install
+        if allow_config_fallback and cfg.backend.type and _config_backend_has_data(cfg):
+            use_cfg = questionary.confirm(
+                f"No saved backends. Use the [backend] section from config.toml "
+                f"(type={cfg.backend.type})?",
+                default=True,
+            ).ask()
+            if use_cfg:
+                return "__config__"
+        return backend_wizard()
+
+    data = bs.load_all()
+    choices = []
+    for n in names:
+        entry = data["backends"][n]
+        choices.append(questionary.Choice(
+            title=f"{n:24s}  {bs.short_summary(entry)}",
+            value=n,
+        ))
+    if allow_config_fallback and _config_backend_has_data(cfg):
+        choices.append(questionary.Choice(
+            title=f"{'(config.toml)':24s}  use the [backend] section from config.toml",
+            value="__config__",
+        ))
+    choices.append(questionary.Separator())
+    choices.append(questionary.Choice(title="Add a new backend...",      value="__new__"))
+    choices.append(questionary.Choice(title="Delete a saved backend...", value="__delete__"))
+
+    default = data.get("last_used") or names[0]
+    pick = questionary.select("Backend:", choices=choices, default=default).ask()
+    if pick is None:
+        return None
+    if pick == "__new__":
+        return backend_wizard()
+    if pick == "__delete__":
+        _delete_backend_flow()
+        return pick_backend(cfg, allow_config_fallback)
+    return pick
+
+
+def _delete_backend_flow() -> None:
+    names = bs.list_names()
+    if not names:
+        print("  (nothing to delete)")
+        return
+    victim = questionary.select("Delete which backend?", choices=names + ["cancel"]).ask()
+    if not victim or victim == "cancel":
+        return
+    if questionary.confirm(f"Really delete '{victim}'?", default=False).ask():
+        bs.remove(victim)
+        print(f"  [swarm] deleted '{victim}'")
+
+
+def _config_backend_has_data(cfg: Config) -> bool:
+    """Whether config.toml's [backend] looks intentionally populated."""
+    b = cfg.backend
+    if b.type == "lm_studio" and b.url:
+        return True
+    if b.type == "llama_cpp" and (b.llama_cpp.binary or b.llama_cpp.model):
+        return True
+    if b.type == "api" and b.api.model:
+        return True
+    if b.type == "custom" and b.url:
+        return True
+    return False
+
+
+def apply_backend_choice(cfg: Config, name: "str | None") -> bool:
+    """Apply the picked backend to cfg.backend in place. Returns False if
+    the chosen name doesn't exist (and isn't __config__)."""
+    if name is None:
+        return False
+    if name == "__config__":
+        return _config_backend_has_data(cfg)
+    entry = bs.get(name)
+    if entry is None:
+        return False
+    bs.apply_to_cfg(entry, cfg.backend)
+    bs.touch_last_used(name)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Project name validation
 # ---------------------------------------------------------------------------
 
@@ -132,12 +372,17 @@ def _warn_project_name(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def setup_screen(cfg: Config) -> Choices:
-    """Questionary flow — project name, preset, description, agents, process.
+    """Questionary flow — backend, project name, preset, description, agents, process.
 
     Detects existing checkpoints and offers Resume/Start over/Delete.
     """
     proj_root = projects_root(cfg)
     proj_root.mkdir(parents=True, exist_ok=True)
+
+    backend_name = pick_backend(cfg)
+    if not apply_backend_choice(cfg, backend_name):
+        print("[swarm] no backend selected. Exiting.")
+        sys.exit(0)
 
     # Build autocomplete from existing project directories
     try:
@@ -232,6 +477,7 @@ def setup_screen(cfg: Config) -> Choices:
         roles=roles,
         process=process_choice,
         resume=resume,
+        backend=backend_name or "",
     )
 
 
@@ -485,10 +731,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("presets", help="List available pipeline presets.")
 
+    bp = sub.add_parser("backends", help="Manage saved backends (add, list, rm, show).")
+    bsub = bp.add_subparsers(dest="backend_cmd")
+    bsub.add_parser("list", help="List saved backends.")
+    bsub.add_parser("add",  help="Interactive wizard to create a new backend.")
+    rmp = bsub.add_parser("rm", help="Delete a saved backend by name.")
+    rmp.add_argument("name")
+    rmp.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    shp = bsub.add_parser("show", help="Show the full saved entry for a backend.")
+    shp.add_argument("name")
+
     return p
 
 
 def _add_run_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--backend",
+        help="Name of a saved backend (see 'swarm.py backends list'). "
+             "If omitted, the TUI picker appears.",
+    )
     p.add_argument("--project", help="Project name (skips the TUI prompt)")
     p.add_argument(
         "--preset",
@@ -572,6 +833,59 @@ def _cmd_rm(cfg: Config, name: str, assume_yes: bool) -> int:
     return 0
 
 
+def _cmd_backends(args: argparse.Namespace) -> int:
+    sub = getattr(args, "backend_cmd", None) or "list"
+
+    if sub == "list":
+        names = bs.list_names()
+        if not names:
+            print("No saved backends yet. Run 'swarm.py backends add' to create one.")
+            print(f"Storage: {bs.store_path()}")
+            return 0
+        data = bs.load_all()
+        table = Table(title="Saved backends", show_header=True, header_style="bold")
+        table.add_column("Name",    style="cyan")
+        table.add_column("Type")
+        table.add_column("Summary")
+        table.add_column("Last used")
+        for n in names:
+            entry = data["backends"][n]
+            ts = entry.get("last_used_at", 0)
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "—"
+            table.add_row(n, entry.get("type", "?"), bs.short_summary(entry), when)
+        rprint(table)
+        print(f"\nStorage: {bs.store_path()}")
+        return 0
+
+    if sub == "add":
+        name = backend_wizard()
+        return 0 if name else 1
+
+    if sub == "rm":
+        if not bs.get(args.name):
+            print(f"No such backend: {args.name!r}", file=sys.stderr)
+            return 1
+        if not args.yes:
+            ok = questionary.confirm(f"Delete backend {args.name!r}?", default=False).ask()
+            if not ok:
+                print("aborted.")
+                return 1
+        bs.remove(args.name)
+        print(f"Deleted backend {args.name!r}.")
+        return 0
+
+    if sub == "show":
+        entry = bs.get(args.name)
+        if not entry:
+            print(f"No such backend: {args.name!r}", file=sys.stderr)
+            return 1
+        print(json.dumps(entry, indent=2, sort_keys=True))
+        return 0
+
+    print(f"Unknown 'backends' subcommand: {sub}", file=sys.stderr)
+    return 2
+
+
 def _cmd_presets() -> int:
     print("Available presets:")
     for name, fn in pr.PIPELINES.items():
@@ -599,6 +913,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_rm(cfg, args.name, args.yes)
     if cmd == "presets":
         return _cmd_presets()
+    if cmd == "backends":
+        return _cmd_backends(args)
 
     return _cmd_run(cfg, args)
 
@@ -608,6 +924,24 @@ def _resolve_choices(cfg: Config, args: argparse.Namespace) -> Choices:
     for any field the user didn't pre-fill."""
     proj_root = projects_root(cfg)
     proj_root.mkdir(parents=True, exist_ok=True)
+
+    # --- backend ---
+    backend_name: "str | None"
+    if args.backend:
+        backend_name = args.backend
+        if not apply_backend_choice(cfg, backend_name):
+            print(
+                f"[swarm] no saved backend named {backend_name!r}. "
+                "Run 'swarm.py backends list' to see what's available, "
+                "or 'swarm.py backends add' to create one.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    else:
+        backend_name = pick_backend(cfg)
+        if not apply_backend_choice(cfg, backend_name):
+            print("[swarm] no backend selected. Exiting.")
+            sys.exit(0)
 
     project = (args.project or questionary.text("Project name:").ask() or "").strip()
     if not project:
@@ -698,19 +1032,21 @@ def _resolve_choices(cfg: Config, args: argparse.Namespace) -> Choices:
         roles=roles,
         process=process_choice,
         resume=resume,
+        backend=backend_name or "",
     )
 
 
 def _cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     # If no CLI args at all, run the full interactive TUI for back-compat.
-    fully_interactive = not any([args.project, args.preset, args.goal])
+    fully_interactive = not any([args.project, args.preset, args.goal, args.backend])
     choices = setup_screen(cfg) if fully_interactive else _resolve_choices(cfg, args)
 
     if getattr(args, "dry_run", False):
         specs = _specs_for(choices)
         agent_names = _agent_names_for(choices)
         est_min = len(specs) * 10
-        print(f"\n[dry-run] Project:  {choices.project}")
+        print(f"\n[dry-run] Backend:  {choices.backend or '(config.toml)'}  type={cfg.backend.type}")
+        print(f"[dry-run] Project:  {choices.project}")
         print(f"[dry-run] Preset:   {choices.preset}")
         print(f"[dry-run] Goal:     {choices.goal}")
         print(f"[dry-run] Agents:   {', '.join(agent_names)}")

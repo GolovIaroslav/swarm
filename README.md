@@ -12,8 +12,9 @@ It's also not a chat wrapper. It's a small TUI that walks you through setup, the
 
 ## What it does
 
-- One command, `python swarm.py`. A questionary TUI walks you through project name, preset, goal and process mode. Or pass everything as CLI flags and skip the TUI.
-- Four backend types: LM Studio, llama.cpp (we spawn `llama-server` for you), any OpenAI-compatible `custom` URL, and an `api` mode that lets you point at any provider LiteLLM supports — OpenRouter, NVIDIA NIM, Groq, OpenAI, Anthropic, Gemini, Together, DeepInfra, and so on. One env var with the key, one model string, done.
+- One command, `python swarm.py`. A questionary TUI walks you through backend, project name, preset, goal and process mode. Or pass everything as CLI flags and skip the TUI.
+- Four backend types: LM Studio, llama.cpp (we spawn `llama-server` for you, including any custom path / `LD_LIBRARY_PATH` / extra flags), any OpenAI-compatible `custom` URL, and an `api` mode that lets you point at any provider LiteLLM supports — OpenRouter, NVIDIA NIM, Groq, OpenAI, Anthropic, Gemini, Together, DeepInfra, and so on. One env var with the key, one model string, done.
+- **Backend wizard, no TOML editing required.** The first time you run, a TUI wizard walks you through binary paths, env vars, model strings — your answers are saved as a named profile under `~/.config/swarm/backends.json`. Next time, pick from the list (`gemma_local`, `openrouter_claude`, ...). Manage with `swarm.py backends list / add / rm / show`.
 - Per-role model override. Strong model for the architect, fast/cheap for the coder, etc.
 - Nine roles in the agent pool: researcher, architect, coder, tester, reviewer, devops, security, docs, refactorer. Six presets shipped, or compose your own.
 - Hierarchical or sequential crews. The pre-flight tests whether the model can produce clean JSON and warns down to sequential if it can't.
@@ -32,17 +33,23 @@ python3.12 -m venv ~/progs/crewai-env
 source ~/progs/crewai-env/bin/activate
 pip install -r requirements.txt
 
-# Fire up LM Studio (load a model, start the server on port 1234),
-# or point config.toml at your llama-server binary and a GGUF file.
-
-# Config
+# Optional — only [execution], [tools], [paths] sections matter now.
+# The [backend] section is legacy; the TUI wizard replaces it.
 cp config.toml.example config.toml
 
-# Run
+# Run. First time you'll get a wizard for your backend (LM Studio,
+# llama.cpp with arbitrary paths and flags, or any cloud provider).
 python swarm.py
 ```
 
 On Windows and macOS the steps are the same, just swap the venv path.
+
+### Backend examples the wizard handles
+
+- **LM Studio** — boot LM Studio, load a model, start its local server. Pick "LM Studio" in the wizard, default URL is fine.
+- **llama.cpp** — point at your `llama-server` binary, the GGUF file, context size, GPU layers and port. Add extra flags (`-fa on`, `-t 6`, `--jinja`, ...) and `LD_LIBRARY_PATH` for builds outside system paths.
+- **Remote API** — pick a provider (OpenRouter, Anthropic, OpenAI, Groq, Gemini, NVIDIA NIM), fill in the model string and the env var that holds your API key.
+- **Custom OpenAI-compatible URL** — vLLM, TGI, or anything that speaks `/v1/chat/completions`.
 
 ## Output layout
 
@@ -67,30 +74,39 @@ projects/my-app/
 
 ## Configuration
 
-All knobs in `config.toml`. The interesting ones:
+Two places things live:
 
-- `[backend]` — `lm_studio`, `llama_cpp`, or `custom` OpenAI-compatible URL.
-- `[execution]` — `process` (`hierarchical` or `sequential`), `max_retry`, `max_rpm`, `task_timeout_minutes`, `context_window`.
-- `[tools]` — web search provider, per-task cap, cache TTL.
-- `[paths]` — where projects get written.
+- `~/.config/swarm/backends.json` — your named backends (managed by the wizard; never edit by hand).
+- `config.toml` — everything else:
+  - `[execution]` — `process` (`hierarchical` or `sequential`), `max_retry`, `max_rpm`, `task_timeout_minutes`, `context_window`, `max_iter`.
+  - `[tools]` — web search provider, per-task cap, cache TTL.
+  - `[paths]` — where projects get written.
 
-See `config.toml.example` for the full template with comments.
+The `[backend]` section in `config.toml.example` is legacy: it still works as a fallback, but new users get walked through the wizard instead.
 
 ## CLI
 
 ```
-python swarm.py                          interactive setup (default)
-python swarm.py run --project foo \      non-interactive: skip the TUI entirely
+python swarm.py                          interactive: backend → project → preset → goal → run
+python swarm.py run --backend NAME \     non-interactive run with a saved backend
+        --project foo \
         --preset cli_tool \
         --goal "build a JSON-to-CSV CLI" \
         --process sequential -y
+python swarm.py run --dry-run            print the plan and exit, no backend started
+
+python swarm.py backends list            show saved backends
+python swarm.py backends add             interactive wizard for a new backend
+python swarm.py backends show NAME       print the full JSON entry
+python swarm.py backends rm NAME         delete a saved backend
+
 python swarm.py list                     show existing projects + checkpoint status
 python swarm.py rm <name>                delete a project directory
 python swarm.py presets                  show available pipelines
 python swarm.py --help                   full usage
 ```
 
-Flags for `run`: `--project`, `--preset`, `--goal`, `--roles a,b,c` (for `--preset custom`), `--process sequential|hierarchical`, `--resume`, `--no-resume`, `--no-monitor`, `--debug`, `-y/--yes`.
+Flags for `run`: `--backend`, `--project`, `--preset`, `--goal`, `--roles a,b,c` (for `--preset custom`), `--process sequential|hierarchical`, `--resume`, `--no-resume`, `--no-monitor`, `--debug`, `-y/--yes`, `--dry-run`.
 
 ## Hardware
 
@@ -100,7 +116,7 @@ For hierarchical mode you want at least a 7B model with reliable JSON tool-calli
 
 ## What's planned
 
-More presets (data science, API client). Better resume UX (skip individual tasks, not just the whole pipeline). Token-aware HANDOFF compaction. OpenRouter as another backend. Maybe CLI flags to skip the TUI entirely for scripting.
+More presets (data science, API client). Better resume UX (skip individual tasks, not just the whole pipeline). Token-aware HANDOFF compaction. A backend wizard step that lets you set per-role overrides without dropping to TOML.
 
 ## What's not planned
 
