@@ -91,6 +91,33 @@ def test_config_defaults(tmp_path):
     assert cfg.ui.live_monitor is True
 
 
+def test_config_llama_cpp_extra_args_and_env(tmp_path):
+    toml = tmp_path / "llama.toml"
+    toml.write_text("""
+[backend]
+type = "llama_cpp"
+
+[backend.llama_cpp]
+binary = "/opt/llama.cpp/llama-server"
+model  = "/data/model.gguf"
+ctx    = 131072
+ngl    = 999
+port   = 8080
+extra_args = ["-fa", "on", "-t", "6", "-ctk", "f16", "-ctv", "f16", "--jinja"]
+
+[backend.llama_cpp.env]
+LD_LIBRARY_PATH = "/opt/llama.cpp/build/bin"
+""")
+    from config import load
+
+    cfg = load(toml)
+    assert cfg.backend.llama_cpp.ctx == 131072
+    assert cfg.backend.llama_cpp.port == 8080
+    assert "-fa" in cfg.backend.llama_cpp.extra_args
+    assert "--jinja" in cfg.backend.llama_cpp.extra_args
+    assert cfg.backend.llama_cpp.env["LD_LIBRARY_PATH"] == "/opt/llama.cpp/build/bin"
+
+
 # ===========================================================================
 # state
 # ===========================================================================

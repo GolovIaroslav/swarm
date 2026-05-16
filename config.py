@@ -27,6 +27,12 @@ class LlamaCppCfg:
     ctx: int = 32768
     ngl: int = 0
     port: int = 8090
+    # Arbitrary extra CLI flags appended to the llama-server invocation.
+    # Example: ["-fa", "on", "-t", "6", "-ctk", "f16", "-ctv", "f16", "--jinja"]
+    extra_args: list = field(default_factory=list)
+    # Extra environment variables for the subprocess (merged onto os.environ).
+    # Example: {"LD_LIBRARY_PATH": "/path/to/llama.cpp/build/bin"}
+    env: dict = field(default_factory=dict)
 
 
 @dataclass

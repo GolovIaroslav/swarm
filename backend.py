@@ -243,10 +243,21 @@ class Backend:
             "--port", str(lc.port),
             "--host", "127.0.0.1",
         ]
+        cmd.extend(str(a) for a in lc.extra_args)
+
+        env = os.environ.copy()
+        for k, v in lc.env.items():
+            # prepend to existing values for path-like vars
+            if k.endswith("_PATH") and k in env and v:
+                env[k] = f"{v}:{env[k]}"
+            else:
+                env[k] = str(v)
+
         self.proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         # wait up to 60s for the server to be ready
         base_url = f"http://localhost:{lc.port}/v1"

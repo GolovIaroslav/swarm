@@ -22,6 +22,14 @@ model  = "/home/jar/models/qwen2.5-coder-14b-q4_k_m.gguf"
 ctx    = 32768
 ngl    = 35          # GPU layers offloaded; 0 = CPU only
 port   = 8090
+# Arbitrary extra flags appended verbatim to the llama-server invocation.
+# Use for flash-attn, threads, KV cache dtype, chat template, etc.
+# extra_args = ["-fa", "on", "-t", "6", "-ctk", "f16", "-ctv", "f16", "--jinja"]
+
+# Extra env vars for the subprocess. Keys ending in _PATH get prepended to
+# the inherited value so LD_LIBRARY_PATH stays additive, not replaced.
+# [backend.llama_cpp.env]
+# LD_LIBRARY_PATH = "/home/jar/.local/llamatune/llama.cpp/build/bin"
 
 [backend.api]
 # Only used when backend.type = "api".
