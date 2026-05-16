@@ -679,9 +679,20 @@ def test_web_search_cap_per_task(tmp_path, monkeypatch):
 # backend: per-role model override
 # ===========================================================================
 
-def test_backend_llm_override_local_wraps_openai_prefix():
+class _FakeLLM:
+    """Captures LLM(...) kwargs so we can assert without invoking crewai's
+    provider-resolution path (which needs litellm at runtime)."""
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.model = kwargs.get("model")
+
+
+def test_backend_llm_override_local_wraps_openai_prefix(monkeypatch):
+    import backend as backend_mod
     from backend import Backend
     from config import Config
+
+    monkeypatch.setattr(backend_mod, "LLM", _FakeLLM)
 
     cfg = Config()
     cfg.backend.type = "lm_studio"
@@ -697,9 +708,12 @@ def test_backend_llm_override_local_wraps_openai_prefix():
     assert llm_override.model == "openai/other/coder-model"
 
 
-def test_backend_llm_override_strips_existing_openai_prefix():
+def test_backend_llm_override_strips_existing_openai_prefix(monkeypatch):
+    import backend as backend_mod
     from backend import Backend
     from config import Config
+
+    monkeypatch.setattr(backend_mod, "LLM", _FakeLLM)
 
     cfg = Config()
     cfg.backend.type = "lm_studio"
@@ -720,13 +734,6 @@ def test_backend_llm_override_api_passes_full_model_string(monkeypatch):
     from backend import Backend
     from config import Config
 
-    captured: dict = {}
-
-    class _FakeLLM:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self.model = kwargs.get("model")
-
     monkeypatch.setattr(backend_mod, "LLM", _FakeLLM)
 
     cfg = Config()
@@ -738,15 +745,18 @@ def test_backend_llm_override_api_passes_full_model_string(monkeypatch):
     b = Backend(cfg=cfg)
     b.model_id = cfg.backend.api.model
 
-    b.llm(model_override="openrouter/qwen/qwen-2.5-coder-32b-instruct")
-    assert captured["model"] == "openrouter/qwen/qwen-2.5-coder-32b-instruct"
-    assert captured["api_key"] == "sk-x"
+    llm = b.llm(model_override="openrouter/qwen/qwen-2.5-coder-32b-instruct")
+    assert llm.kwargs["model"] == "openrouter/qwen/qwen-2.5-coder-32b-instruct"
+    assert llm.kwargs["api_key"] == "sk-x"
 
 
 def test_per_role_override_wiring(monkeypatch):
     """Simulates the per-role wiring loop from swarm._cmd_run."""
+    import backend as backend_mod
     from backend import Backend
     from config import Config
+
+    monkeypatch.setattr(backend_mod, "LLM", _FakeLLM)
 
     cfg = Config()
     cfg.backend.type = "lm_studio"
